@@ -16,9 +16,12 @@ When installation passes its GPU correctness check, start mining with your Pearl
 scripts/mine.sh --wallet '<your-prl-wallet>'
 ```
 
+Run an offline 60-second benchmark with `scripts/benchmark.sh`.
+Use `--on-battery pause|run` and `--intensity 10..100` to control desktop mining.
+
 Payouts: check your wallet on https://pearl.herominers.com/.
 
-Expect full, sustained GPU use. Press Ctrl-C once to stop cleanly. Measured on an 80-GPU-core M3 Ultra: about 16 TOPS, and 20 shares accepted at HeroMiners in about 5 hours of mining (October 2026). Other chips have not been measured yet.
+Expect full, sustained GPU use at default intensity. Press Ctrl-C once to stop cleanly. Measured on an 80-GPU-core M3 Ultra: about 16 TOPS, and 20 shares accepted at HeroMiners in about 5 hours of mining (October 2026). Performance varies by chip.
 
 No wallet yet? Get the official Pearl Wallet from https://github.com/pearl-research-labs/pearl/releases.
 

@@ -262,10 +262,11 @@ def verify_gate(header,proof,config,share_nbits=None,invoke=None,scheme=V3_SCHEM
             getattr(exc,'function','Scheme.validate_proof'),str(exc)) from exc
 
 class Pipeline:
-    def __init__(self,native,shape,log,scheme=V3_SCHEME,max_gpu_seconds=0.4,submission_policy=None):
+    def __init__(self,native,shape,log,scheme=V3_SCHEME,max_gpu_seconds=0.4,submission_policy=None,desktop=None):
         self.native=native; self.shape=shape; self.log=log; self.scheme=scheme
         self.submission_policy=submission_policy or SoloSubmissionPolicy()
         self.max_gpu_seconds=max_gpu_seconds
+        self.desktop=desktop
         self.config=scheme.build_config(native,shape.m,shape.n,shape.k)
         try:
             scheme.validate_config(self.config)
@@ -353,6 +354,7 @@ class Pipeline:
         callback=CALLBACK(mark)
         result=None
         gpu_counted=False
+        desktop_owned=False
         try:
             self.records[index]=record
             block=self.bounds(getattr(record.source,'block_target',record.source.target))
@@ -379,6 +381,12 @@ class Pipeline:
             desc=Desc(abi_version=1,m=s.m,n=s.n,k=s.k,a=self.a,bt=self.b[index],a_bytes=s.m*s.k,bt_bytes=s.n*s.k,
                 a_seed=words(bytes(seeds.a_noise_seed)),b_seed=words(bytes(seeds.b_noise_seed)),block_bound=words(block),share_bound=words(share),
                 block_capacity=s.result_capacity,share_capacity=s.result_capacity,cert_version=scheme.kernel_cert_version(),rank=scheme.rank,job_id=record.job_id)
+            if self.desktop:
+                desktop_owned=await self.desktop.before_dispatch(
+                    lambda: self.stopped or not is_current(record.source))
+                if not desktop_owned:
+                    record.cancelled=True
+                    return record
             handle=PTR()
             def dispatch():
                 with native.measured(record):
@@ -402,6 +410,9 @@ class Pipeline:
             stage_start=time.monotonic()
             result=native.poll(record.handle)
             self.record_completed_work(record,result)
+            if desktop_owned:
+                self.desktop.after_gpu(result.gpu_start_time,result.gpu_end_time)
+                desktop_owned=False
             record.move('scanned')
             gpu=result.gpu_end_time-result.gpu_start_time
             if gpu>0:
@@ -522,6 +533,11 @@ class Pipeline:
                     record.move('scanned')
                 record.pending_finds=0
                 native.release(record.handle)
+            if desktop_owned:
+                if result is not None:
+                    self.desktop.after_gpu(result.gpu_start_time,result.gpu_end_time)
+                else:
+                    self.desktop.abort_dispatch()
             if gpu_counted:
                 self.inflight-=1
             record.move('released')

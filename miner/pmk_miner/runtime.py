@@ -95,11 +95,12 @@ class RoutineTelemetry:
     """Bound routine per-job events while keeping alerts and submissions immediate."""
     ROUTINE_EVENTS = frozenset({'gpu_dispatch', 'completed', 'python_overhead'})
 
-    def __init__(self, sink, *, seconds=5.0, clock=time.monotonic, routine_sink=None):
+    def __init__(self, sink, *, seconds=5.0, clock=time.monotonic, routine_sink=None, metrics=None):
         if not math.isfinite(seconds) or seconds <= 0:
             raise ValueError('telemetry interval must be positive')
         self.sink = sink
         self.routine_sink = routine_sink
+        self.metrics = metrics
         self.seconds = seconds
         self.clock = clock
         self._window_start = clock()
@@ -133,6 +134,8 @@ class RoutineTelemetry:
             'last': dict(self._last),
             'window_seconds': max(0.0, self.clock() - self._window_start),
         }
+        if self.metrics is not None:
+            fields.update(self.metrics())
         self.sink('routine_telemetry', **fields)
         if self.routine_sink is not None:
             self.routine_sink.write('routine_telemetry', **fields)

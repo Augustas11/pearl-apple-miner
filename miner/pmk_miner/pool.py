@@ -8,6 +8,7 @@ import contextlib
 import json
 import random
 import re
+import socket
 import ssl
 import time
 import urllib.parse
@@ -24,6 +25,9 @@ HEADER_LEN = 76
 MAX_U256 = (1 << 256) - 1
 MAX_POOL_LINE = 64 * 1024
 DEFAULT_REPLY_TIMEOUT_SECONDS = 30.0
+DEFAULT_SILENCE_TIMEOUT_SECONDS = 180.0
+MIN_SILENCE_TIMEOUT_SECONDS = 30.0
+MAX_SILENCE_TIMEOUT_SECONDS = 1800.0
 DEFAULT_DIFFICULTY_FLOOR = 10_000
 _HEX_RE = re.compile(r"^[0-9a-fA-F]+$")
 _sleep = asyncio.sleep
@@ -261,12 +265,19 @@ class PoolClient:
         agent: str = "pmk/0.1.0",
         log: Callable[..., None] | None = None,
         reply_timeout: float = DEFAULT_REPLY_TIMEOUT_SECONDS,
+        silence_timeout: float = DEFAULT_SILENCE_TIMEOUT_SECONDS,
         notify_interval: float = 1.0,
     ) -> None:
         if not wallet:
             raise ValueError("wallet must be nonempty")
         if not worker:
             raise ValueError("worker must be nonempty")
+        if (
+            isinstance(silence_timeout, bool)
+            or not isinstance(silence_timeout, (int, float))
+            or not MIN_SILENCE_TIMEOUT_SECONDS <= silence_timeout <= MAX_SILENCE_TIMEOUT_SECONDS
+        ):
+            raise ValueError("silence_timeout must be between 30 and 1800 seconds")
         self.endpoint = PoolEndpoint.parse(url)
         self.wallet = wallet
         self.worker = worker
@@ -274,6 +285,9 @@ class PoolClient:
         self.agent = agent
         self.log = log or (lambda *args, **kwargs: None)
         self.reply_timeout = reply_timeout
+        self.silence_timeout = float(silence_timeout)
+        self._silence_timeout_seconds = self.silence_timeout
+        self._last_valid_inbound = 0.0
         self.notify_interval = notify_interval
         self.latest: PoolJob | None = None
         self.session_id = 0
@@ -398,6 +412,8 @@ class PoolClient:
             ),
             timeout=self.reply_timeout,
         )
+        self._configure_socket_keepalive()
+        self._last_valid_inbound = time.monotonic()
         self._reader_task = asyncio.create_task(self._read_loop())
         reply = await self._rpc(
             "mining.authorize",
@@ -443,7 +459,16 @@ class PoolClient:
         try:
             while True:
                 try:
-                    raw = await self._reader.readuntil(b"\n")
+                    remaining = self._silence_timeout_seconds - (
+                        time.monotonic() - self._last_valid_inbound
+                    )
+                    if remaining <= 0:
+                        raise PoolTransportError("pool silence timeout")
+                    raw = await asyncio.wait_for(
+                        self._reader.readuntil(b"\n"), timeout=remaining
+                    )
+                except asyncio.TimeoutError as exc:
+                    raise PoolTransportError("pool silence timeout") from exc
                 except asyncio.LimitOverrunError as exc:
                     raise PoolTransportError("pool line exceeds 64 KiB") from exc
                 except asyncio.IncompleteReadError as exc:
@@ -469,10 +494,12 @@ class PoolClient:
                             self._log("pool_job_rejected", reason="R-A6_cert_version")
                         self.fatal = exc
                         raise
+                    self._last_valid_inbound = time.monotonic()
                     continue
                 if message.id in self._pending:
                     future = self._pending[message.id]
                     if not future.done():
+                        self._last_valid_inbound = time.monotonic()
                         future.set_result(message)
         except Exception as exc:
             self._invalidate_current_session()
@@ -581,6 +608,36 @@ class PoolClient:
                 self._prev_by_height.popitem(last=False)
         elif prior != prev:
             self._log("pool_prev_block_inconsistent", height=job.height)
+
+    def _configure_socket_keepalive(self) -> None:
+        writer = self._writer
+        if writer is None:
+            return
+        sock = writer.get_extra_info("socket")
+        if sock is None:
+            return
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        except (AttributeError, OSError):
+            return
+
+        idle_seconds = max(1, min(60, int(self.silence_timeout / 3)))
+        interval_seconds = max(1, min(10, int(self.silence_timeout / 6)))
+        optional_options = (
+            (getattr(socket, "TCP_KEEPALIVE", None), idle_seconds),
+            (getattr(socket, "TCP_KEEPIDLE", None), idle_seconds),
+            (getattr(socket, "TCP_KEEPINTVL", None), interval_seconds),
+            (getattr(socket, "TCP_KEEPCNT", None), 3),
+        )
+        configured = set()
+        for option, value in optional_options:
+            if option is None or option in configured:
+                continue
+            configured.add(option)
+            try:
+                sock.setsockopt(socket.IPPROTO_TCP, option, value)
+            except (AttributeError, OSError):
+                pass
 
     def _log(self, event: str, **kwargs: Any) -> None:
         self.log(event, **{key: self._sanitize_log_value(value) for key, value in kwargs.items()})

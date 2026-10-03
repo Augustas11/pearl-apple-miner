@@ -969,3 +969,52 @@ def test_cancellation_during_dispatch_retains_gpu_ownership():
         assert native.completed and native.released
         assert pipeline.inflight == 0 and not pipeline.records
     asyncio.run(scenario())
+
+
+def test_battery_transition_finishes_inflight_then_pauses_next_dispatch():
+    import asyncio
+    from pmk_miner.desktop import DesktopControls
+    from pmk_miner.pipeline import Pipeline
+    async def scenario():
+        source = ['ac']
+        desktop = DesktopControls(lambda: source[0], intensity=50, poll_seconds=0)
+        native = FakeNative(asyncio.get_running_loop())
+        pipeline = Pipeline(native, Shape(128,128,4096,2), lambda *a, **kw: None,
+                            desktop=desktop)
+        pipeline.source = SimpleNamespace(target=0)
+        pipeline.template = object()
+        first = asyncio.create_task(pipeline.run(0,0,None,None,lambda _:True))
+        while not native.dispatched:
+            await asyncio.sleep(.001)
+        source[0] = 'battery'
+        desktop.refresh()
+        record = await first
+        assert not record.cancelled and native.released and record.completed_ops > 0
+        native.dispatched = False
+        second = asyncio.create_task(pipeline.run(0,0,None,None,lambda _:True))
+        await asyncio.sleep(.05)
+        assert not native.dispatched and not second.done()
+        source[0] = 'ac'
+        record = await asyncio.wait_for(second,1)
+        assert native.dispatched and not record.cancelled
+        assert not desktop._gate.locked()
+    asyncio.run(scenario())
+
+
+def test_intensity_gate_is_released_when_native_dispatch_fails():
+    import asyncio
+    from pmk_miner.desktop import DesktopControls
+    from pmk_miner.pipeline import Pipeline
+    async def scenario():
+        desktop = DesktopControls(lambda:'ac', intensity=50)
+        native = FakeNative(asyncio.get_running_loop())
+        def fail(*args): raise RuntimeError('dispatch failed')
+        native.metal.pmk_run_job = fail
+        pipeline = Pipeline(native, Shape(128,128,4096,2), lambda *a, **kw:None,
+                            desktop=desktop)
+        pipeline.source = SimpleNamespace(target=0)
+        pipeline.template = object()
+        with pytest.raises(RuntimeError,match='dispatch failed'):
+            await pipeline.run(0,0,None,None,lambda _:True)
+        assert not desktop._gate.locked() and not pipeline.records
+    asyncio.run(scenario())

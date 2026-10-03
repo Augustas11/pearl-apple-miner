@@ -92,3 +92,32 @@ def test_fatal_gate_is_counted_in_pool_summary(monkeypatch, tmp_path, gate):
     assert summary['gate_failures'] == 1
     assert summary['failed'] is True
     assert summary['completed_ops'] == 0
+
+
+def test_fatal_pool_error_exits_while_paused_on_battery(monkeypatch,tmp_path):
+    import asyncio
+    from types import SimpleNamespace
+    from pmk_miner import pool_runtime as runtime
+    from pmk_miner.desktop import DesktopControls
+    from pmk_miner.pool import PoolProtocolError
+    async def scenario():
+        wallet=tmp_path/'wallet';wallet.write_text('prl1synthetictest')
+        args=SimpleNamespace(wallet_file=wallet,wallet_allowlist=wallet,
+            pool_url='stratum+tcp://127.0.0.1:1',worker='test',
+            desktop=DesktopControls(lambda:'battery'))
+        class Native:
+            probe_key='test'
+            def close(self): pass
+        class Pipeline:
+            def __init__(self,*a,**k): pass
+            def cancel(self): pass
+        async def fail_client(self,stop):
+            await asyncio.sleep(.02)
+            raise PoolProtocolError('fatal mock pool')
+        monkeypatch.setattr(runtime,'Native',Native)
+        monkeypatch.setattr(runtime,'Pipeline',Pipeline)
+        monkeypatch.setattr(runtime.PoolClient,'run',fail_client)
+        with pytest.raises(PoolProtocolError,match='fatal mock pool'):
+            await asyncio.wait_for(runtime.mine_pool(args,
+                {'run':{'state_dir':str(tmp_path/'state')}},lambda *a,**k:None,lambda shape:(1,1)),1)
+    asyncio.run(scenario())

@@ -2,6 +2,8 @@
 
 pmk itself is Apache-2.0 (see `LICENSE`). It includes or derives from the following.
 
+ideas inspired by Breakwater-ecosystem/pearl-metal-miner (Apache-2.0); no code copied
+
 ## OpenJarvis (Apache-2.0)
 
 `upstream/openjarvis/` contains files derived from OpenJarvis

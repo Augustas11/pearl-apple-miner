@@ -2,6 +2,8 @@
 import importlib.util
 from pathlib import Path
 import stat
+import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -73,3 +75,47 @@ def test_base_mac_job_fits_existing_memory_budget():
 def test_admission_never_extends_six_hour_window(last_probe, valid_hours, passed, expected):
     assert admission._record_fresh(dict(last_probe_unix=last_probe,
         valid_hours=valid_hours, g3_passed=passed), 100_000) is expected
+
+
+def test_benchmark_wrapper_needs_no_wallet_or_network(monkeypatch):
+    from pmk_miner import __main__ as miner
+    calls = []
+    inherited = ('PMK_GPU_LOCK_HELD', 'B4_LAB_OWNER_TOKEN',
+                 'PMK_LAB_RESUME_HOOK', 'PMK_B4_LAB_RESUME_REPORT')
+    for name in inherited:
+        monkeypatch.setenv(name, 'inherited')
+    monkeypatch.setattr(miner, 'main', lambda **kwargs: calls.append(
+        (kwargs, list(sys.argv), {name: name in quickstart.os.environ for name in inherited})) or 0)
+    monkeypatch.setattr(quickstart.subprocess, 'check_output',
+                        lambda *args, **kwargs: pytest.fail('benchmark touched host or network setup'))
+    monkeypatch.setattr(sys, 'argv', ['scripts/mine.sh', '--benchmark', '30',
+        '--difficulty', '4096', '--on-battery', 'run', '--intensity', '70'])
+
+    assert quickstart.main() == 0
+    assert calls == [({'standalone': True}, ['pmk_miner', '--benchmark', '30',
+        '--difficulty', '4096.0', '--on-battery', 'run', '--intensity', '70'],
+        {name: False for name in inherited})]
+
+
+def test_mining_wrapper_passes_desktop_and_watchdog_flags(monkeypatch, tmp_path):
+    from pmk_miner import __main__ as miner
+    from pmk_miner import pool
+    calls = []
+    monkeypatch.setenv('PMK_HOME', str(tmp_path / 'state'))
+    monkeypatch.setattr(quickstart, 'worker_name', lambda: 'test-mac')
+    monkeypatch.setattr(quickstart, 'gpu_core_count', lambda: 8)
+    monkeypatch.setattr(quickstart.subprocess, 'check_output', lambda *a, **kw: str(16 * 1024**3))
+    monkeypatch.setattr(quickstart, 'choose_shape',
+                        lambda *_args: SimpleNamespace(m=2048, n=2048, k=4096, slots=2))
+    monkeypatch.setattr(pool.PoolClient, '__init__', lambda self, *a, **kw: None)
+    monkeypatch.setitem(sys.modules, 'pmk_quickstart', SimpleNamespace(
+        ensure_admission=lambda **kwargs: tmp_path / 'admission.json'))
+    monkeypatch.setattr(miner, 'main', lambda **kwargs: calls.append((kwargs, list(sys.argv))) or 0)
+    monkeypatch.setattr(sys, 'argv', ['scripts/mine.sh', '--wallet', 'prl1synthetic',
+        '--pool-silence-timeout', '90', '--on-battery', 'run', '--intensity', '60'])
+
+    assert quickstart.main() == 0
+    forwarded = calls[0][1]
+    assert forwarded[forwarded.index('--pool-silence-timeout') + 1] == '90.0'
+    assert forwarded[forwarded.index('--on-battery') + 1] == 'run'
+    assert forwarded[forwarded.index('--intensity') + 1] == '60'

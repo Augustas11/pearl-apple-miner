@@ -3,7 +3,8 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
-  echo 'Usage: scripts/mine.sh --wallet <prl1...> [--worker <name>] [--pool <url>]'
+  echo 'Usage: scripts/mine.sh --wallet <prl1...> [--worker <name>] [--pool <url>] [--pool-silence-timeout 30..1800] [--on-battery pause|run] [--intensity 10..100]'
+  echo '       scripts/mine.sh --benchmark [seconds] [--difficulty <value>] [--on-battery pause|run] [--intensity 10..100]'
   echo 'Default pool: stratum+tcp://sg.pearl.herominers.com:1200'
   echo 'Default worker: sanitized hostname -s. Ctrl-C stops mining.'
   exit 0

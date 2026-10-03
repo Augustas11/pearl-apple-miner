@@ -14,6 +14,8 @@ import tomllib
 
 from .runtime import gpu_lock, LabSession, RunState, ProbeSchedule, RoutineTelemetry, RotatingJsonlSink
 from .native import Native, NativeError
+from .cli import add_desktop_flags
+from .desktop import mining_session
 from .pipeline import Pipeline, Shape, FatalDeviceError
 from .transport import (GatewayClient, NodeRpcConfig, NodeRpcClient, GatewayLogTail,
                         SubmissionTracker, SubmissionOutcome, FatalCertVersionError,
@@ -49,6 +51,8 @@ async def mine(args,config):
     stop=asyncio.Event(); loop=asyncio.get_running_loop()
     for sig in (signal.SIGTERM,signal.SIGINT):
         loop.add_signal_handler(sig,stop.set)
+    desktop=getattr(args,'desktop',None)
+    power_task=asyncio.create_task(desktop.monitor(stop)) if desktop else None
     latest=None; fatal=None; pipeline=None; accepted=0
     state_dir=Path(config.get('run',{}).get('state_dir', Path.home()/'.local/state/pmk'))
     state=RunState(state_dir/'run.json')
@@ -71,7 +75,7 @@ async def mine(args,config):
         max_bytes=int(config.get('run',{}).get('routine_log_max_bytes',4*1024*1024)),
         backups=int(config.get('run',{}).get('routine_log_backups',4)))
     telemetry=RoutineTelemetry(log, seconds=float(config.get('run',{}).get('telemetry_interval_seconds',5.0)),
-        routine_sink=routine_sink)
+        routine_sink=routine_sink,metrics=desktop.snapshot if desktop else None)
 
     async def poll_templates():
         nonlocal latest,fatal
@@ -101,7 +105,7 @@ async def mine(args,config):
     try:
         # This initializes the production pipeline and runs all fail-closed probes.
         native=await asyncio.to_thread(Native)
-        pipeline=Pipeline(native,shape,telemetry.log)
+        pipeline=Pipeline(native,shape,telemetry.log,**({'desktop':desktop} if desktop else {}))
         probes=ProbeSchedule(float(config.get('run',{}).get('probe_interval_seconds',6*3600)))
         log('startup',probe_key=native.probe_key,shape=dataclasses.asdict(shape),
             memory_budget_bytes=budget,memory_estimate_bytes=estimate)
@@ -200,6 +204,7 @@ async def mine(args,config):
             return not stop.is_set() and latest is not None and latest.template_identity==job.template_identity
 
         while not stop.is_set():
+            if desktop and not await desktop.wait_ready(stop.is_set): break
             if probes.due:
                 # All lane tasks have drained here; never probe while a job owns buffers.
                 await asyncio.to_thread(probes.refresh,native)
@@ -253,6 +258,8 @@ async def mine(args,config):
         log('stopped',accepted=accepted,completed_ops=completed_ops)
     finally:
         stop.set(); poller.cancel()
+        if power_task:
+            await asyncio.gather(power_task,return_exceptions=True)
         await asyncio.gather(poller,return_exceptions=True)
         if pipeline: pipeline.cancel()
         if tracking:
@@ -264,22 +271,27 @@ async def mine(args,config):
 
 def main(*, standalone=False, pool_log=None, admission_refresh=None):
     parser=argparse.ArgumentParser()
-    parser.add_argument('--mode',choices=['solo','pool'],required=True)
+    parser.add_argument('--mode',choices=['solo','pool'])
     parser.add_argument('--gateway')
     parser.add_argument('--pool-url')
     parser.add_argument('--wallet-file',type=Path)
     parser.add_argument('--wallet-allowlist',type=Path)
     parser.add_argument('--worker')
-    parser.add_argument('--config',type=Path,required=True)
+    parser.add_argument('--config',type=Path)
+    add_desktop_flags(parser)
     parser.add_argument('--lab-owner-token',default=_env_first('B4_LAB_OWNER_TOKEN','PMK_B4_LAB_OWNER_TOKEN','PMK_LAB_OWNER_TOKEN'))
     parser.add_argument('--resume-hook',type=Path,default=_env_path('B4_LAB_RESUME_HOOK','PMK_B4_LAB_RESUME_HOOK','PMK_LAB_RESUME_HOOK'))
     parser.add_argument('--resume-report',type=Path,default=_env_path('B4_LAB_RESUME_REPORT','PMK_B4_LAB_RESUME_REPORT','PMK_LAB_RESUME_REPORT'))
     args=parser.parse_args()
+    if args.benchmark is None and (args.mode is None or args.config is None):
+        parser.error('--mode and --config are required for mining')
+    if args.benchmark is not None and any((args.mode,args.config,args.gateway,args.pool_url,args.wallet_file,args.wallet_allowlist,args.worker)):
+        parser.error('--benchmark is offline; mining connection/configuration flags cannot be combined with it')
     lab=None if standalone else LabSession(token=args.lab_owner_token,resume_hook=args.resume_hook,report=args.resume_report)
     config=None; native_redaction_config=None
     try:
         if sys.version_info[:2]!=(3,12): raise RuntimeError('Python 3.12 required')
-        config=tomllib.loads(args.config.read_text())
+        config=tomllib.loads(args.config.read_text()) if args.config else {}
         try:
             if args.mode != 'solo':
                 raise ValueError('pool mode has no node credentials')
@@ -292,8 +304,12 @@ def main(*, standalone=False, pool_log=None, admission_refresh=None):
         if lab is not None:
             lab.check()
         try:
-            with gpu_lock(log):
-                if args.mode == 'pool':
+            with gpu_lock(log), mining_session(
+                    on_battery=args.on_battery,intensity=args.intensity,log=log) as args.desktop:
+                if args.benchmark is not None:
+                    from .benchmark import run_benchmark
+                    asyncio.run(run_benchmark(args,log))
+                elif args.mode == 'pool':
                     from .pool_runtime import mine_pool
                     admission_deadline = admission_refresh() if admission_refresh is not None else None
                     asyncio.run(mine_pool(args,config,pool_log or log,memory_limits,

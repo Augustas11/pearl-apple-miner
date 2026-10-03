@@ -83,10 +83,26 @@ class Status:
 
 def main():
     parser = argparse.ArgumentParser(prog='scripts/mine.sh')
-    parser.add_argument('--wallet', required=True, help='your Pearl wallet (prl1...)')
+    parser.add_argument('--wallet', help='your Pearl wallet (prl1...)')
     parser.add_argument('--worker', help='worker name (default: sanitized short hostname)')
     parser.add_argument('--pool', default='stratum+tcp://sg.pearl.herominers.com:1200')
+    from pmk_miner.cli import add_desktop_flags
+    add_desktop_flags(parser)
     args = parser.parse_args()
+    # A standalone invocation owns its GPU lock and never consumes a long-run
+    # harness token, including the offline benchmark path.
+    os.environ.pop('PMK_GPU_LOCK_HELD', None)
+    for key in tuple(os.environ):
+        if key.startswith(('B4_LAB_', 'PMK_LAB_', 'PMK_B4_LAB_')):
+            os.environ.pop(key)
+    if args.benchmark is not None:
+        from pmk_miner import __main__ as miner
+        sys.argv = ['pmk_miner', '--benchmark', str(args.benchmark),
+                    '--difficulty', str(args.difficulty), '--on-battery', args.on_battery,
+                    '--intensity', str(args.intensity)]
+        return miner.main(standalone=True)
+    if args.wallet is None:
+        parser.error('--wallet is required for mining')
     if not re.fullmatch(r'prl1[a-z0-9]{6,252}', args.wallet):
         parser.error('wallet must be a single prl1... address; never enter a private key')
     worker = args.worker if args.worker is not None else worker_name()
@@ -95,7 +111,7 @@ def main():
     from pmk_miner.pool import PoolClient
     # Validate the URL without opening a connection, before writing wallet files.
     try:
-        PoolClient(args.pool, args.wallet, worker)
+        PoolClient(args.pool, args.wallet, worker, silence_timeout=args.pool_silence_timeout)
     except ValueError:
         parser.error('pool must be a valid stratum+tcp://host:port or stratum+ssl://host:port URL')
     shape = choose_shape(int(subprocess.check_output(['sysctl', '-n', 'hw.memsize'])), gpu_core_count())
@@ -109,11 +125,6 @@ def main():
                   '[run]\nstate_dir = ' + json.dumps(str(state / 'pool')) +
                   '\ntelemetry_interval_seconds = 5\n')
     os.environ['PMK_G3_ADMISSION_FILE'] = str(state / 'g3-admission.json')
-    # A beta run owns its GPU lock and never consumes a long-run harness token.
-    os.environ.pop('PMK_GPU_LOCK_HELD', None)
-    for key in tuple(os.environ):
-        if key.startswith(('B4_LAB_', 'PMK_LAB_', 'PMK_B4_LAB_')):
-            os.environ.pop(key)
     from pmk_quickstart import ensure_admission
     from pmk_miner import __main__ as miner
     def refresh_admission(**kwargs):
@@ -123,7 +134,10 @@ def main():
                    for record in records if record.get('g3_passed') is True)
     sys.argv = ['pmk_miner', '--mode', 'pool', '--pool-url', args.pool,
                 '--wallet-file', str(state / 'wallet'), '--wallet-allowlist',
-                str(state / 'wallet-allowlist'), '--worker', worker, '--config', str(config)]
+                str(state / 'wallet-allowlist'), '--worker', worker, '--config', str(config),
+                '--pool-silence-timeout', str(args.pool_silence_timeout),
+                '--on-battery', args.on_battery, '--intensity', str(args.intensity),
+                '--difficulty', str(args.difficulty)]
     print(f'[pmk] job size {shape.m}x{shape.n}x{shape.k}; checking GPU admission; '
           'Ctrl-C stops mining cleanly.', flush=True)
     return miner.main(standalone=True, pool_log=Status(miner.log),

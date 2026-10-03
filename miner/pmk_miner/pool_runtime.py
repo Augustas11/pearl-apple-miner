@@ -77,7 +77,9 @@ async def mine_pool(args, config, log, memory_limits, *, admission_refresh=None,
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, stop.set)
     client = PoolClient(args.pool_url, wallet, args.worker,
-                        difficulty_floor=pool_cfg.get('difficulty_floor', 10000), log=log)
+                        difficulty_floor=pool_cfg.get('difficulty_floor', 10000), log=log,
+                        silence_timeout=getattr(args, 'pool_silence_timeout', 180))
+    desktop = getattr(args, 'desktop', None)
     def telemetry_log(event, **fields):
         if event == 'routine_telemetry':
             elapsed = max(time.monotonic() - started, 1e-9)
@@ -91,7 +93,9 @@ async def mine_pool(args, config, log, memory_limits, *, admission_refresh=None,
         log(event, **fields)
 
     telemetry = RoutineTelemetry(telemetry_log, seconds=float(run.get('telemetry_interval_seconds', 5)),
-        routine_sink=RotatingJsonlSink(state_dir / 'pool-routine.jsonl'))
+        routine_sink=RotatingJsonlSink(state_dir / 'pool-routine.jsonl'),
+        metrics=desktop.snapshot if desktop else None)
+    power_task = asyncio.create_task(desktop.monitor(stop)) if desktop else None
     native = pipeline = None
     fatal = None
     last_template_build = float('-inf')
@@ -169,7 +173,7 @@ async def mine_pool(args, config, log, memory_limits, *, admission_refresh=None,
 
     try:
         native = await asyncio.to_thread(Native)
-        pipeline = Pipeline(native, shape, pipeline_log, submission_policy=PoolSubmissionPolicy())
+        pipeline = Pipeline(native, shape, pipeline_log, submission_policy=PoolSubmissionPolicy(), desktop=desktop)
         probes = ProbeSchedule(float(run.get('probe_interval_seconds', 6 * 3600)))
         def schedule_admission(deadline):
             if deadline is not None:
@@ -181,6 +185,8 @@ async def mine_pool(args, config, log, memory_limits, *, admission_refresh=None,
             shape=dataclasses.asdict(shape), memory_budget_bytes=budget,
             memory_estimate_bytes=estimate, probe_key=native.probe_key)
         while not stop.is_set():
+            if desktop and not await desktop.wait_ready(lambda: stop.is_set() or supervisor.done()):
+                break
             if supervisor.done():
                 supervisor.result()
                 break
@@ -238,6 +244,8 @@ async def mine_pool(args, config, log, memory_limits, *, admission_refresh=None,
         raise
     finally:
         stop.set()
+        if power_task:
+            await asyncio.gather(power_task, return_exceptions=True)
         if pipeline:
             pipeline.cancel()
         supervisor.cancel()
@@ -261,6 +269,8 @@ async def mine_pool(args, config, log, memory_limits, *, admission_refresh=None,
             elapsed_seconds=elapsed, ops_per_second=completed_ops / elapsed,
             pool_hashrate=completed_ops / (2 * elapsed), block_candidates=blocks,
             failed=fatal is not None)
+        if desktop:
+            summary.update(desktop.snapshot())
         state.save(pool_summary=summary)
         log('pool_summary', **summary)
         if not summary['poisson_ok']:

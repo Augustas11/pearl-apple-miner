@@ -9,6 +9,13 @@ enum { PMK_SUCCESS=0, PMK_PENDING=1, PMK_INVALID=-101, PMK_RESOURCE=-102,
        PMK_PROBE_FAILED=-103, PMK_GPU_FAILED=-104, PMK_BUSY=-105 };
 typedef void *pmk_context;
 typedef void *pmk_job;
+typedef void *pmk_activity;
+typedef enum {
+    PMK_POWER_SOURCE_UNKNOWN = 0,
+    PMK_POWER_SOURCE_AC = 1,
+    PMK_POWER_SOURCE_BATTERY = 2,
+    PMK_POWER_SOURCE_DESKTOP = 3
+} pmk_power_source_kind;
 typedef struct { uint32_t t_rows, t_cols, transcript[16], hash[8]; } pmk_slot;
 typedef struct {
     uint32_t abi_version, m, n, k;
@@ -55,6 +62,13 @@ int32_t pmk_job_error(pmk_job job, char *error, uint64_t error_capacity);
 int32_t pmk_job_wait_callback(pmk_job job);
 int32_t pmk_job_release(pmk_job job);
 int32_t pmk_valid_signal_bytes(const int8_t *bytes, uint64_t count);
+/* Prevent App Nap and idle system sleep while allowing the display to sleep.
+ * The returned activity must be ended exactly once; ending NULL is a no-op. */
+pmk_activity pmk_activity_begin(const char *reason);
+void pmk_activity_end(pmk_activity activity);
+/* Returns a pmk_power_source_kind value. AC means a battery-backed Mac on
+ * external power; DESKTOP means AC power with no internal battery. */
+int32_t pmk_power_source(void);
 #ifdef __cplusplus
 }
 #endif

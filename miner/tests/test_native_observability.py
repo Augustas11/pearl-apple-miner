@@ -131,7 +131,7 @@ def test_cli_logs_native_diagnostics_but_not_arbitrary_exception_messages(monkey
     monkeypatch.setattr(cli.sys, 'version_info', (3, 12))
     monkeypatch.setattr(cli.argparse.ArgumentParser, 'parse_args', lambda _self: SimpleNamespace(
         config=SimpleNamespace(read_text=lambda: ''), lab_owner_token=None,
-        resume_hook=None, resume_report=None, gateway='unused', mode='solo'))
+        resume_hook=None, resume_report=None, gateway='unused', mode='solo', benchmark=None))
     monkeypatch.setattr(cli, 'LabSession', lambda **_kwargs: SimpleNamespace(
         check=lambda: (_ for _ in ()).throw(
             NativeError('pmk_buffer_alloc', -102, 'resource budget or allocation limit exceeded'))))
@@ -156,7 +156,7 @@ def test_cli_logs_fatal_device_error_gate_and_safe_diagnostics(monkeypatch, caps
     monkeypatch.setattr(cli.sys, 'version_info', (3, 12))
     monkeypatch.setattr(cli.argparse.ArgumentParser, 'parse_args', lambda _self: SimpleNamespace(
         config=SimpleNamespace(read_text=lambda: ''), lab_owner_token=None,
-        resume_hook=None, resume_report=None, gateway='unused', mode='solo'))
+        resume_hook=None, resume_report=None, gateway='unused', mode='solo', benchmark=None))
     monkeypatch.setattr(cli, 'LabSession', lambda **_kwargs: SimpleNamespace(
         check=lambda: (_ for _ in ()).throw(FatalDeviceError.verifier(
             'v3 verifier gate failed for rpc_password=supersecret wallet=prl1qqqqqqqqqqqqqq'))))
