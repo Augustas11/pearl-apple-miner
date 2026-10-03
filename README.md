@@ -16,11 +16,9 @@ When installation passes its GPU correctness check, start mining with your Pearl
 scripts/mine.sh --wallet '<your-prl-wallet>'
 ```
 
-Payouts: check your wallet on https://pearl.herominers.com/. Direct stats URL (check; unverified): `https://pearl.herominers.com/api/stats_address?address=<wallet>`.
+Payouts: check your wallet on https://pearl.herominers.com/.
 
-Expect full, sustained GPU use. Press Ctrl-C once to stop cleanly. An 80-GPU-core M3 Ultra measured about 16 TOPS: roughly one share per 18 minutes and 0.2 PRL/day at the measured difficulty. For other M1–M4 chips, a rough estimate is 18 min × (80 / GPU cores) per share and 0.2 × (GPU cores / 80) PRL/day; real speed and rewards vary.
-
-Power cost: at full GPU load a Mac draws more power than the PRL it earns is worth at today's price (about $0.20/day of PRL on an M3 Ultra). Mine because you want to back the network or expect PRL to rise, not for profit today.
+Expect full, sustained GPU use. Press Ctrl-C once to stop cleanly. Measured on an 80-GPU-core M3 Ultra: about 16 TOPS, and 20 shares accepted at HeroMiners in about 5 hours of mining (October 2026). Other chips have not been measured yet.
 
 No wallet yet? Get the official Pearl Wallet from https://github.com/pearl-research-labs/pearl/releases.
 
@@ -156,7 +154,7 @@ GPU tests take `/tmp/pmm-gpu-bench.lock`; do not run them next to a benchmark.
 ## Warnings
 
 - Mining puts the GPU under heavy sustained load. Watch temperatures. Fanless Macs throttle hard.
-- Earnings are small. One M3 Ultra is on the order of 0.2 PRL per day at the pool rate seen in October 2026.
+- Earnings depend on network difficulty and PRL price; check the pool stats for your wallet.
 - This is experimental software with no warranty. Do not run it on a machine you cannot afford to stress.
 - Keep wallet files, node credentials and gateway env files out of the repo.
 
