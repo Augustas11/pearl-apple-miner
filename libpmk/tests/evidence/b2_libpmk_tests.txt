@@ -1,0 +1,99 @@
+ProductName:		macOS
+ProductVersion:		26.5
+BuildVersion:		25F71
+Mac17,3
+B2 correctness only; production 64x64x16x2x2x2; no performance claims
+[0/1] Planning build
+Building for production...
+[0/5] Write sources
+[2/5] Write swift-version--58304C5D6DBC2206.txt
+[4/6] Compiling PMK ABI.swift
+[4/8] Write Objects.LinkFileList
+[5/10] Linking libpmk.dylib
+[7/10] Emitting module PMKTests
+[8/10] Compiling PMKTests FailClosedTests.swift
+[9/11] Compiling libpmkPackageTests runner.swift
+[9/11] Write Objects.LinkFileList
+[10/11] Linking libpmkPackageTests
+Build complete! (15.70s)
+Test Suite 'All tests' started at 2026-10-03 08:54:12.353.
+Test Suite 'libpmkPackageTests.xctest' started at 2026-10-03 08:54:12.355.
+Test Suite 'FailClosedTests' started at 2026-10-03 08:54:12.355.
+Test Case '-[PMKTests.FailClosedTests testProbeRejectsBrokenLayoutAndProductionHash]' started.
+Test Case '-[PMKTests.FailClosedTests testProbeRejectsBrokenLayoutAndProductionHash]' passed (0.288 seconds).
+Test Suite 'FailClosedTests' passed at 2026-10-03 08:54:12.643.
+	 Executed 1 test, with 0 failures (0 unexpected) in 0.288 (0.288) seconds
+Test Suite 'HostTests' started at 2026-10-03 08:54:12.643.
+Test Case '-[PMKTests.HostTests testABI]' started.
+Test Case '-[PMKTests.HostTests testABI]' passed (0.000 seconds).
+Test Case '-[PMKTests.HostTests testAllocationFailureRecordsContextDiagnostic]' started.
+Test Case '-[PMKTests.HostTests testAllocationFailureRecordsContextDiagnostic]' passed (0.250 seconds).
+Test Case '-[PMKTests.HostTests testCallbackBarrierDrainsReturnAndRejectsCallbackThreadWait]' started.
+Test Case '-[PMKTests.HostTests testCallbackBarrierDrainsReturnAndRejectsCallbackThreadWait]' passed (0.051 seconds).
+Test Case '-[PMKTests.HostTests testDiagnosticStringIsBoundedPrintableAndRedacted]' started.
+Test Case '-[PMKTests.HostTests testDiagnosticStringIsBoundedPrintableAndRedacted]' passed (0.001 seconds).
+Test Case '-[PMKTests.HostTests testG3AdmissionRequiresFreshDeviceClassRecord]' started.
+Test Case '-[PMKTests.HostTests testG3AdmissionRequiresFreshDeviceClassRecord]' passed (0.005 seconds).
+Test Case '-[PMKTests.HostTests testLargeProductionOverflowFailsClosedInsteadOfRecovering]' started.
+Test Case '-[PMKTests.HostTests testLargeProductionOverflowFailsClosedInsteadOfRecovering]' passed (0.000 seconds).
+Test Case '-[PMKTests.HostTests testProbeRefreshIntervalPolicyUsesMonotonicTime]' started.
+Test Case '-[PMKTests.HostTests testProbeRefreshIntervalPolicyUsesMonotonicTime]' passed (0.000 seconds).
+Test Case '-[PMKTests.HostTests testStringBoundaries]' started.
+Test Case '-[PMKTests.HostTests testStringBoundaries]' passed (0.000 seconds).
+Test Case '-[PMKTests.HostTests testUnarmedCallbackBarrierCanBeDropped]' started.
+Test Case '-[PMKTests.HostTests testUnarmedCallbackBarrierCanBeDropped]' passed (0.000 seconds).
+Test Case '-[PMKTests.HostTests testValidSignalBytesAcceptsExactRangeForEveryByteValue]' started.
+Test Case '-[PMKTests.HostTests testValidSignalBytesAcceptsExactRangeForEveryByteValue]' passed (0.001 seconds).
+Test Case '-[PMKTests.HostTests testValidSignalBytesHandlesUnalignedSIMDLoadsAndTails]' started.
+Test Case '-[PMKTests.HostTests testValidSignalBytesHandlesUnalignedSIMDLoadsAndTails]' passed (0.132 seconds).
+Test Suite 'HostTests' passed at 2026-10-03 08:54:13.086.
+	 Executed 11 tests, with 0 failures (0 unexpected) in 0.441 (0.443) seconds
+Test Suite 'KernelTests' started at 2026-10-03 08:54:13.086.
+Test Case '-[PMKTests.KernelTests testCompletionFailureRecordsJobDiagnostic]' started.
+Test Case '-[PMKTests.KernelTests testCompletionFailureRecordsJobDiagnostic]' passed (0.145 seconds).
+Test Case '-[PMKTests.KernelTests testCPUOracleMatchesFullJobTilesForReleaseVectors]' started.
+Test Case '-[PMKTests.KernelTests testCPUOracleMatchesFullJobTilesForReleaseVectors]' passed (1.880 seconds).
+Test Case '-[PMKTests.KernelTests testInjectedEncoderFailureSurfacesDiagnosticText]' started.
+Test Case '-[PMKTests.KernelTests testInjectedEncoderFailureSurfacesDiagnosticText]' passed (0.230 seconds).
+Test Case '-[PMKTests.KernelTests testK3SGBenchVectorsMatchOracleSlotsAndCounters]' started.
+Test Case '-[PMKTests.KernelTests testK3SGBenchVectorsMatchOracleSlotsAndCounters]' passed (1.528 seconds).
+Test Suite 'KernelTests' passed at 2026-10-03 08:54:16.870.
+	 Executed 4 tests, with 0 failures (0 unexpected) in 3.784 (3.785) seconds
+Test Suite 'NoiseTests' started at 2026-10-03 08:54:16.870.
+Test Case '-[PMKTests.NoiseTests testCPUAndGPUBlake3SingleBlockKeyedVectors]' started.
+Test Case '-[PMKTests.NoiseTests testCPUAndGPUBlake3SingleBlockKeyedVectors]' passed (0.183 seconds).
+Test Case '-[PMKTests.NoiseTests testGPUK1K2NoiseMatchesReferenceVectors]' started.
+Test Case '-[PMKTests.NoiseTests testGPUK1K2NoiseMatchesReferenceVectors]' passed (39.314 seconds).
+Test Suite 'NoiseTests' passed at 2026-10-03 08:54:56.368.
+	 Executed 2 tests, with 0 failures (0 unexpected) in 39.497 (39.498) seconds
+Test Suite 'PMKTests' started at 2026-10-03 08:54:56.368.
+Test Case '-[PMKTests.PMKTests testCPUOracleKeyedCompressDeterministic]' started.
+Test Case '-[PMKTests.PMKTests testCPUOracleKeyedCompressDeterministic]' passed (0.000 seconds).
+Test Suite 'PMKTests' passed at 2026-10-03 08:54:56.369.
+	 Executed 1 test, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+Test Suite 'libpmkPackageTests.xctest' passed at 2026-10-03 08:54:56.369.
+	 Executed 19 tests, with 0 failures (0 unexpected) in 44.010 (44.014) seconds
+Test Suite 'All tests' passed at 2026-10-03 08:54:56.369.
+	 Executed 19 tests, with 0 failures (0 unexpected) in 44.010 (44.016) seconds
+G3: initializing production context
+G3: context ready
+G3: loading v1_256x256x4096
+G3: PASS v1_256x256x4096 31 cases
+G3: loading v2_256x256x4096_pm127
+G3: PASS v2_256x256x4096_pm127 31 cases
+G3: loading v3_128x128x65536
+G3: PASS v3_128x128x65536 31 cases
+G3: loading v4_pearl_c64
+G3: PASS v4_pearl_c64 1 cases
+◇ Test run started.
+↳ Testing Library Version: 1902
+↳ Target Platform: arm64e-apple-macos14.0
+✔ Test run with 0 tests in 0 suites passed after 0.001 seconds.
+probe cache key 770c36a6e06ca40785f819e24743a751e35001ea23e9fabc6a5b8130072754ac
+G3 full-slot compare: PASS 50 jobs
+boundary/zero/simultaneous/overflow: PASS
+invalid inputs and 3-inflight cap: PASS
+callback-return lifetime barrier: PASS
+  config: hash_tile_h=4 hash_tile_w=8 rows.shape=[(8, 4), (32, 1), (32, 1)] cols.shape=[(1, 2), (8, 4), (32, 1)] bytes=00080000800000000703000000000001030300000000000000000000000000000000000000000000000000000000000000000000
+end-to-end GPU find -> PlainProof verify: PASS
+libpmk integration: PASS

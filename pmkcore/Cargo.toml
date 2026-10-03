@@ -1,0 +1,33 @@
+[package]
+name = "pmkcore"
+version = "0.1.0"
+edition = "2021"
+description = "Pearl v3 Metal miner native core: job builder (CSPRNG B, keyed BLAKE3 Merkle commitment, salted cert-v3 seeds)"
+publish = false
+
+[lib]
+name = "pmkcore"
+crate-type = ["rlib", "staticlib", "cdylib"]
+
+[dependencies]
+blake3 = "1.8"
+rayon = "1.11"
+aes = "0.8"
+ctr = "0.9"
+getrandom = "0.3"
+zk-pow = { path = "../vendor/pearl/zk-pow" }
+pearl-blake3 = { path = "../vendor/pearl/pearl-blake3" }
+# Already used by zk-pow; its PlainProof wire format uses this exact codec.
+bincode = "1.3.3"
+
+[dev-dependencies]
+rand = "0.9"
+rand_chacha = "0.9"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(aes_armv8)"] }
+
+[profile.release]
+opt-level = 3
+codegen-units = 1
+lto = "thin"

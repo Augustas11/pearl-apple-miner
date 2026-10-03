@@ -1,0 +1,11 @@
+{
+  "provenance": {
+    "classification": "documented_protocol_example_with_synthetic_substitutions",
+    "source": "docs/kb/pearl-pool-protocol.md section 1.1, derived there from SOAT @48defc8",
+    "recorded_traffic": false,
+    "notes": "The JSON-RPC method, object fields, example job_id, height, cert_version, and 2^21 target semantics follow the documented HeroMiners frame. The protocol document contains placeholders rather than captured bytes, so the header bytes and concrete target encoding are deterministic synthetic substitutions. This fixture is not pool traffic."
+  },
+  "frames": {
+    "valid_notify": "{\"id\":null,\"method\":\"mining.notify\",\"params\":{\"job_id\":\"00000000_2097152\",\"header\":\"020000001111111111111111111111111111111111111111111111111111111111111111222222222222222222222222222222222222222222222222222222222222222240e20100ffff001b\",\"target\":\"00000000000007fff80000000000000000000000000000000000000000000000\",\"height\":101009,\"cert_version\":3}}\n"
+  }
+}

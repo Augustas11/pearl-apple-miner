@@ -1,0 +1,22 @@
+oj-pearl-mps
+Copyright OpenJarvis contributors.
+
+This directory contains files derived from OpenJarvis
+(https://github.com/open-jarvis/OpenJarvis), licensed under the Apache License,
+Version 2.0 (see LICENSE in this directory).
+
+Source commit: c4da16e1ca3d21f4cc1905d4200063e564104f0f (OpenJarvis main, 2026-10-01)
+Source files:
+  src/openjarvis/mining/_mps_miner_loop_main.py -> src/oj_pearl_mps/_mps_miner_loop_main.py
+  src/openjarvis/mining/_miner_loop_main.py     -> src/oj_pearl_mps/_miner_loop_main.py
+  src/openjarvis/mining/_constants.py           -> src/oj_pearl_mps/_constants.py (trimmed)
+
+All three files were MODIFIED by pearl-metal-miner (2026-10-02) to run against
+current Pearl (pearl-research-labs/pearl 7039e66f3c44f1541cb0e85328061e619ec5904d,
+py-pearl-mining 0.3.1): MiningConfiguration API, cert_version in the gateway
+mining job, V3 salted noise-seed derivation, rank-penalty minimum rank and k
+bounds, and module renaming for standalone packaging. The NoisyGEMM adapter and
+mining hot loop are kept as written upstream. Every change is listed in
+docs/OPENJARVIS_UPGRADE.md at the repository root.
+
+src/oj_pearl_mps/__init__.py and tests/ are new files written for this package.

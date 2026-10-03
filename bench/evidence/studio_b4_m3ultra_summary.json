@@ -1,0 +1,1066 @@
+{
+  "criteria": {
+    "g3_admission": "PASS",
+    "g5": "PASS",
+    "lab": "PASS",
+    "lab_resume": "PASS",
+    "p2": "PASS",
+    "p6": "PASS",
+    "preflight": "PASS",
+    "probe": "PASS",
+    "production_smoke": "PASS",
+    "pytest_fast": "PASS",
+    "sustained": "PASS"
+  },
+  "elapsed_seconds": 736.8880807090027,
+  "quick": false,
+  "result": "PASS",
+  "root": "$B4_ROOT",
+  "steps": {
+    "g3_admission": {
+      "admission_file": "$B4_ROOT/.b4_run/g3-admission.json",
+      "devices": [
+        {
+          "cache_key": "cff9007d4d604ad70d112baef20ae225c51bec74b7effa0a5430643df7f46e48",
+          "device_class": "Apple9",
+          "g3_passed": true,
+          "gpu_name": "Apple M3 Ultra",
+          "last_probe_unix": 1790951505.688333,
+          "os_build": "25E253",
+          "source": "B4 full G3: v1, v2, v3, v4 slots/counters/overflow/canaries",
+          "valid_hours": 6
+        }
+      ]
+    },
+    "g5": {
+      "accepted_blocks": 4,
+      "blocks": [
+        {
+          "bits": "1e010000",
+          "hash": "c7bdc8e16b1444ff501cf6ee1cde9cccf59b5a630a1781d17227ca7ca480adde",
+          "height": 1,
+          "previousblockhash": "78d0ab27df6a51a8e9dbbdefffca1ebbbeb3818cb083ce2c2f43b047247e5832",
+          "time": 1790951519
+        },
+        {
+          "bits": "1e010000",
+          "hash": "f77fa0b83d35b41cc70e0f34671416a9a09aa62ca4f05416895b12b5ec2b333c",
+          "height": 2,
+          "previousblockhash": "c7bdc8e16b1444ff501cf6ee1cde9cccf59b5a630a1781d17227ca7ca480adde",
+          "time": 1790951527
+        },
+        {
+          "bits": "1e010000",
+          "hash": "588e286f16d0f96965ae0fcc8a2d34b71ea5fb773dbdb3276bb9c1e2af2276b0",
+          "height": 3,
+          "previousblockhash": "f77fa0b83d35b41cc70e0f34671416a9a09aa62ca4f05416895b12b5ec2b333c",
+          "time": 1790951531
+        },
+        {
+          "bits": "1e010000",
+          "hash": "260db6e2ad802a2a410e580bd895f391594468ee55289b6bb28ed30e8e7aad5e",
+          "height": 4,
+          "previousblockhash": "588e286f16d0f96965ae0fcc8a2d34b71ea5fb773dbdb3276bb9c1e2af2276b0",
+          "time": 1790951535
+        }
+      ],
+      "coinbase_checked_heights": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "coinbase_ok": true,
+      "completed_jobs": 8,
+      "corrupted_certificate_rejection": true,
+      "final_height": 4,
+      "gateway_log": "$B4_ROOT/.b4_run/g5/logs/gateway.log",
+      "gpu_find_accept_latency_seconds": [
+        5.4421467781066895,
+        3.8910539150238037,
+        3.8667550086975098,
+        3.871976137161255
+      ],
+      "miner_graceful_stop": true,
+      "miner_log": "$B4_ROOT/.b4_run/g5/logs/miner.log",
+      "miner_payout_verified": 4,
+      "overhead_events": [
+        {
+          "event": "python_overhead",
+          "job_id": 2,
+          "python_overhead_pct": 16.80683093150182,
+          "python_seconds": 1.0687148310000123,
+          "stages": {
+            "build": 0.00607674999628216,
+            "build_cpu": 6.629200000000252e-05,
+            "build_native": 0.005723041002056561,
+            "dispatch": 0.0021377079974627122,
+            "gpu_wait": 0.0831179160013562,
+            "proof": 3.4494721825176384,
+            "scan": 2.258399035781622e-05,
+            "submit": 2.7957720471313223
+          },
+          "time": 1790951527.687168,
+          "wall_seconds": 6.358812291000504
+        },
+        {
+          "event": "python_overhead",
+          "job_id": 1,
+          "python_overhead_pct": 16.87375402451047,
+          "python_seconds": 1.0733940589999955,
+          "stages": {
+            "build": 0.006262459006393328,
+            "build_cpu": 6.125e-05,
+            "build_native": 0.005939708004007116,
+            "dispatch": 0.001995584010728635,
+            "gpu_wait": 0.04907700000330806,
+            "proof": 3.4671562741714297,
+            "scan": 2.8000009479001164e-05,
+            "submit": 2.8156029466335895
+          },
+          "time": 1790951527.689624,
+          "wall_seconds": 6.361323374992935
+        },
+        {
+          "event": "python_overhead",
+          "job_id": 4,
+          "python_overhead_pct": 16.211728340850172,
+          "python_seconds": 0.6510067960000072,
+          "stages": {
+            "build": 0.0034577909973450005,
+            "build_cpu": 4.612499999999994e-05,
+            "build_native": 0.003278292002505623,
+            "dispatch": 0.0016351250087609515,
+            "gpu_wait": 0.05079462499998044,
+            "proof": 2.18878554503317,
+            "scan": 2.108400803990662e-05,
+            "submit": 1.7508848067227518
+          },
+          "time": 1790951531.707844,
+          "wall_seconds": 4.015653249996831
+        },
+        {
+          "event": "python_overhead",
+          "job_id": 3,
+          "python_overhead_pct": 15.993578049145817,
+          "python_seconds": 0.6426668280000073,
+          "stages": {
+            "build": 0.003447042006882839,
+            "build_cpu": 5.187499999997902e-05,
+            "build_native": 0.003257000003941357,
+            "dispatch": 0.0016440829931525514,
+            "gpu_wait": 0.08536187499703374,
+            "proof": 2.1771050734387245,
+            "scan": 1.8291990272700787e-05,
+            "submit": 1.731200283378712
+          },
+          "time": 1790951531.710447,
+          "wall_seconds": 4.018280499993125
+        },
+        {
+          "event": "python_overhead",
+          "job_id": 5,
+          "python_overhead_pct": 16.27648619838921,
+          "python_seconds": 0.6537702289999849,
+          "stages": {
+            "build": 0.0035102080000797287,
+            "build_cpu": 6.145800000001422e-05,
+            "build_native": 0.003287667001131922,
+            "dispatch": 0.0016073750011855736,
+            "gpu_wait": 0.05289387499215081,
+            "proof": 2.192208647131338,
+            "scan": 1.9583007087931037e-05,
+            "submit": 1.7468088089080993
+          },
+          "time": 1790951535.729585,
+          "wall_seconds": 4.016654583989293
+        },
+        {
+          "event": "python_overhead",
+          "job_id": 6,
+          "python_overhead_pct": 16.16152634188528,
+          "python_seconds": 0.6495033600000085,
+          "stages": {
+            "build": 0.0035146250011166558,
+            "build_cpu": 5.879100000000248e-05,
+            "build_native": 0.003305374993942678,
+            "dispatch": 0.0016012499982025474,
+            "gpu_wait": 0.08734916600224096,
+            "proof": 2.165028683099081,
+            "scan": 1.6833000699989498e-05,
+            "submit": 1.742256782919867
+          },
+          "time": 1790951535.731781,
+          "wall_seconds": 4.018824375001714
+        },
+        {
+          "event": "python_overhead",
+          "job_id": 7,
+          "python_overhead_pct": 10.609055487267382,
+          "python_seconds": 0.013634041999998354,
+          "stages": {
+            "build": 0.003166374997817911,
+            "build_cpu": 5.4625000000030344e-05,
+            "build_native": 0.0029221660079201683,
+            "dispatch": 0.0016891659906832501,
+            "gpu_wait": 0.04965516598895192,
+            "proof": 0.06720412301365286,
+            "scan": 1.7250000382773578e-05,
+            "submit": 0.004445790982572362
+          },
+          "time": 1790951535.862488,
+          "wall_seconds": 0.12851324999064673
+        },
+        {
+          "event": "python_overhead",
+          "job_id": 8,
+          "python_overhead_pct": 7.753601288180329,
+          "python_seconds": 0.011940042000001448,
+          "stages": {
+            "build": 0.0031287090096157044,
+            "build_cpu": 4.941699999999605e-05,
+            "build_native": 0.002901209008996375,
+            "dispatch": 0.0016972919984254986,
+            "gpu_wait": 0.08433758300088812,
+            "proof": 0.06263154200860299,
+            "scan": 1.5666999388486147e-05,
+            "submit": 0.0
+          },
+          "time": 1790951535.8879921,
+          "wall_seconds": 0.1539935000037076
+        }
+      ],
+      "p6_correlated": [
+        {
+          "accept_time": 1790951526.82791,
+          "accepted_block": {
+            "bits": "1e010000",
+            "hash": "c7bdc8e16b1444ff501cf6ee1cde9cccf59b5a630a1781d17227ca7ca480adde",
+            "height": 1,
+            "previousblockhash": "78d0ab27df6a51a8e9dbbdefffca1ebbbeb3818cb083ce2c2f43b047247e5832",
+            "time": 1790951519
+          },
+          "chain_confirmed": true,
+          "gpu_find_time": 1790951521.3857632,
+          "gpu_find_to_accept_seconds": 5.4421467781066895,
+          "header_fields": {
+            "bits": "1e010000",
+            "merkleroot": "18644a62989a5ab86c844514b0628c1f3824de38fcfb31c0e0760203ccdedc3c",
+            "previousblockhash": "78d0ab27df6a51a8e9dbbdefffca1ebbbeb3818cb083ce2c2f43b047247e5832",
+            "time": 1790951519,
+            "version": 536870912
+          },
+          "header_hash": "dd62298be840ecee60f619ce50273e11",
+          "proof_digest": "6ce20d3d90d2c320a790b5f4ac6ac42f4da6be3ee612559ca42ef721dd5ad287",
+          "proof_handoff_time": 1790951521.4663239,
+          "proof_handoff_to_accept_seconds": 5.361586093902588,
+          "verdict": "accepted"
+        },
+        {
+          "accept_time": 1790951531.639195,
+          "accepted_block": {
+            "bits": "1e010000",
+            "hash": "f77fa0b83d35b41cc70e0f34671416a9a09aa62ca4f05416895b12b5ec2b333c",
+            "height": 2,
+            "previousblockhash": "c7bdc8e16b1444ff501cf6ee1cde9cccf59b5a630a1781d17227ca7ca480adde",
+            "time": 1790951527
+          },
+          "chain_confirmed": true,
+          "gpu_find_time": 1790951527.748141,
+          "gpu_find_to_accept_seconds": 3.8910539150238037,
+          "header_fields": {
+            "bits": "1e010000",
+            "merkleroot": "cf32e2f043bcf578fea14b6747c01a0dbfe4b043a9977d549dfc0913014b8545",
+            "previousblockhash": "c7bdc8e16b1444ff501cf6ee1cde9cccf59b5a630a1781d17227ca7ca480adde",
+            "time": 1790951527,
+            "version": 536870912
+          },
+          "header_hash": "79a763b65d19a2468aeccfa29f2d4904",
+          "proof_digest": "cb159f2bbf375238bf2f8592dd8445ada83bf0e17643579d00503bb2f77bfb86",
+          "proof_handoff_time": 1790951527.81586,
+          "proof_handoff_to_accept_seconds": 3.8233349323272705,
+          "verdict": "accepted"
+        },
+        {
+          "accept_time": 1790951535.637769,
+          "accepted_block": {
+            "bits": "1e010000",
+            "hash": "588e286f16d0f96965ae0fcc8a2d34b71ea5fb773dbdb3276bb9c1e2af2276b0",
+            "height": 3,
+            "previousblockhash": "f77fa0b83d35b41cc70e0f34671416a9a09aa62ca4f05416895b12b5ec2b333c",
+            "time": 1790951531
+          },
+          "chain_confirmed": true,
+          "gpu_find_time": 1790951531.771014,
+          "gpu_find_to_accept_seconds": 3.8667550086975098,
+          "header_fields": {
+            "bits": "1e010000",
+            "merkleroot": "44fc97baba4128ea092d95dfa35bdc05134a4367a30b38c002b5611e0999c8ed",
+            "previousblockhash": "f77fa0b83d35b41cc70e0f34671416a9a09aa62ca4f05416895b12b5ec2b333c",
+            "time": 1790951531,
+            "version": 536870912
+          },
+          "header_hash": "6122b843bdf929193013ed8c8cf1ad58",
+          "proof_digest": "6aba141d7002eab776ed9d28627c6484fed0b7957497dda2c3a321df44038a0e",
+          "proof_handoff_time": 1790951531.8381839,
+          "proof_handoff_to_accept_seconds": 3.7995851039886475,
+          "verdict": "accepted"
+        },
+        {
+          "accept_time": 1790951539.660484,
+          "accepted_block": {
+            "bits": "1e010000",
+            "hash": "260db6e2ad802a2a410e580bd895f391594468ee55289b6bb28ed30e8e7aad5e",
+            "height": 4,
+            "previousblockhash": "588e286f16d0f96965ae0fcc8a2d34b71ea5fb773dbdb3276bb9c1e2af2276b0",
+            "time": 1790951535
+          },
+          "chain_confirmed": true,
+          "gpu_find_time": 1790951535.788508,
+          "gpu_find_to_accept_seconds": 3.871976137161255,
+          "header_fields": {
+            "bits": "1e010000",
+            "merkleroot": "b0694bbf4d94ea4ab35ce46bca049f96f3a0a940911c1c844d35c127b67651b4",
+            "previousblockhash": "588e286f16d0f96965ae0fcc8a2d34b71ea5fb773dbdb3276bb9c1e2af2276b0",
+            "time": 1790951535,
+            "version": 536870912
+          },
+          "header_hash": "6ae99e3734af51edf554e585e85f3888",
+          "proof_digest": "b32efb7041264f5aba562103097b89215f0c1d80da644a9b30dece288a70ac68",
+          "proof_handoff_time": 1790951535.849471,
+          "proof_handoff_to_accept_seconds": 3.8110129833221436,
+          "verdict": "accepted"
+        }
+      ],
+      "p6_log": "$B4_ROOT/.b4_run/g5/logs/p6.jsonl",
+      "p6_peak_gateway_tree_pids": [
+        47371,
+        47372,
+        47389
+      ],
+      "p6_peak_gateway_tree_rss_kb": 4831616,
+      "proof_handoff_accept_latency_seconds": [
+        5.361586093902588,
+        3.8233349323272705,
+        3.7995851039886475,
+        3.8110129833221436
+      ],
+      "run": "$B4_ROOT/.b4_run/g5",
+      "shape": {
+        "k": 4096,
+        "m": 8192,
+        "n": 8192,
+        "slots": 2
+      },
+      "start_height": 0,
+      "tap_log": "$B4_ROOT/.b4_run/g5/logs/tap.log",
+      "target_blocks": 3
+    },
+    "lab": {
+      "lock": "~/.window.lock",
+      "owned": true,
+      "resume_hook": "$B4_ROOT/resume_hook.sh",
+      "resume_report": "$B4_ROOT/.b4_run/lab-resume-report.json"
+    },
+    "lab_resume": {
+      "confirmed": true,
+      "outcome": "resumed",
+      "time": 1790952162.0094762
+    },
+    "p2": {
+      "criterion": "P2",
+      "k3_after": {
+        "binary": "$B4_ROOT/bin/k3-alone",
+        "device": "Apple M3 Ultra",
+        "gpu_ms_median": 65.5034791707294,
+        "gpu_ms_p99": 65.64028250155387,
+        "jobs": 200,
+        "mode": "k3_alone",
+        "ops": 109951162777600,
+        "ops_per_second": 16688006700690.42,
+        "pass": true,
+        "scope": "k3_only",
+        "shape": {
+          "k": 4096,
+          "m": 8192,
+          "n": 8192
+        },
+        "tops": 16.68800670069042,
+        "wall_seconds": 6.588633666659007
+      },
+      "k3_alone": {
+        "binary": "$B4_ROOT/bin/k3-alone",
+        "device": "Apple M3 Ultra",
+        "gpu_ms_median": 65.52087499585468,
+        "gpu_ms_p99": 65.64571291470202,
+        "jobs": 200,
+        "mode": "k3_alone",
+        "ops": 109951162777600,
+        "ops_per_second": 16688666744722.809,
+        "pass": true,
+        "scope": "k3_only",
+        "shape": {
+          "k": 4096,
+          "m": 8192,
+          "n": 8192
+        },
+        "tops": 16.68866674472281,
+        "wall_seconds": 6.588373083330225
+      },
+      "k3_before": {
+        "binary": "$B4_ROOT/bin/k3-alone",
+        "device": "Apple M3 Ultra",
+        "gpu_ms_median": 65.52087499585468,
+        "gpu_ms_p99": 65.64571291470202,
+        "jobs": 200,
+        "mode": "k3_alone",
+        "ops": 109951162777600,
+        "ops_per_second": 16688666744722.809,
+        "pass": true,
+        "scope": "k3_only",
+        "shape": {
+          "k": 4096,
+          "m": 8192,
+          "n": 8192
+        },
+        "tops": 16.68866674472281,
+        "wall_seconds": 6.588373083330225
+      },
+      "machine": {
+        "cpu_brand": "Apple M3 Ultra",
+        "hostname": "redacted",
+        "hw_model": "Mac15,14",
+        "machine": "arm64",
+        "macos": "26.4.1",
+        "memsize": "274877906944",
+        "platform": "macOS-26.4.1-arm64-arm-64bit",
+        "python": "3.12.14"
+      },
+      "paired_order": [
+        "k3_before",
+        "pipeline",
+        "k3_after"
+      ],
+      "paired_same_run": true,
+      "pass": true,
+      "pipeline": {
+        "allow_slow_gpu": false,
+        "blocks": 0,
+        "build_ms_median": 2.294729492859915,
+        "build_ms_p99": 3.064444999326921,
+        "diagnostic_concurrency": {
+          "profile_serial": false,
+          "requested_slots": 2,
+          "scope": "pipeline_only",
+          "worker_count": 2
+        },
+        "expected_shares": 0.10980367660522461,
+        "gpu_ms_median": 53.99199999374105,
+        "gpu_ms_p99": 55.112149998749366,
+        "gpu_timeline": {
+          "dispatch_events": 200,
+          "gpu_idle_gap_pct": 0.7009030581666947,
+          "gpu_idle_gap_seconds": 0.048419750019093044,
+          "gpu_intervals": 200,
+          "gpu_overlap_seconds": 3.765142750038649,
+          "gpu_span_seconds": 6.90819499999634,
+          "gpu_union_seconds": 6.859775249977247,
+          "max_inflight": 2
+        },
+        "job_wall_ms_median": 68.33879150508437,
+        "job_wall_ms_p99": 91.93793824189886,
+        "jobs": 200,
+        "jobs_requested": 200,
+        "memory_budget_bytes": 3825205248,
+        "mode": "pipeline",
+        "ops": 109951162777600,
+        "ops_per_second": 15860920949877.436,
+        "peak_rss_bytes": 630095872,
+        "probe_key": "cff9007d4d604ad70d112baef20ae225c51bec74b7effa0a5430643df7f46e48",
+        "profile_jsonl": "$B4_ROOT/.b4_run/perf-p2-profile.jsonl",
+        "proof_submissions": 0,
+        "python_overhead_pct": 0.109196354683917,
+        "shape": {
+          "k": 4096,
+          "m": 8192,
+          "n": 8192,
+          "slots": 2
+        },
+        "share_nbits": "1b008fec",
+        "shares": 2,
+        "stage_ms": {
+          "build": {
+            "count": 200,
+            "ms_median": 2.294729492859915,
+            "ms_p99": 3.064444999326921,
+            "seconds_total": 0.4720835008920403
+          },
+          "build_cpu": {
+            "count": 200,
+            "ms_median": 0.05862499999999965,
+            "ms_p99": 0.09567149000000261,
+            "seconds_total": 0.012001330999999974
+          },
+          "build_native": {
+            "count": 200,
+            "ms_median": 2.147854000213556,
+            "ms_p99": 2.871459341549751,
+            "seconds_total": 0.4425542099197628
+          },
+          "dispatch": {
+            "count": 200,
+            "ms_median": 1.3548749993788078,
+            "ms_p99": 1.6355965691036485,
+            "seconds_total": 0.2786296269769082
+          },
+          "gpu_wait": {
+            "count": 200,
+            "ms_median": 64.63700050517218,
+            "ms_p99": 69.50772740063258,
+            "seconds_total": 12.923698584956583
+          },
+          "proof": {
+            "count": 200,
+            "ms_median": 0.0,
+            "ms_p99": 0.611038750066099,
+            "seconds_total": 0.13231095901574008
+          },
+          "scan": {
+            "count": 200,
+            "ms_median": 0.011167001503054053,
+            "ms_p99": 0.0221013270493131,
+            "seconds_total": 0.0023290360550163314
+          },
+          "submit": {
+            "count": 200,
+            "ms_median": 0.0,
+            "ms_p99": 1.2500095181155756e-06,
+            "seconds_total": 4.169996827840805e-07
+          }
+        },
+        "studio_eligible": true,
+        "tops": 15.860920949877436,
+        "wall_seconds": 6.932205457997043
+      },
+      "profile_jsonl": "$B4_ROOT/.b4_run/perf-p2-profile.jsonl",
+      "quick": false,
+      "ratio": 0.9504007235864352,
+      "ratio_after": 0.9504383138353626,
+      "ratio_before": 0.9504007235864352,
+      "ratio_conservative": 0.9504007235864352,
+      "ratio_geometric": 0.9504195185250564,
+      "ratio_policy": "pipeline_ops_per_second / max(k3_before_ops_per_second, k3_after_ops_per_second)",
+      "target_ratio": 0.85
+    },
+    "p6": {
+      "criterion": "P6",
+      "gpu_find_accept_latency_seconds": [
+        5.4421467781066895,
+        3.8910539150238037,
+        3.8667550086975098,
+        3.871976137161255
+      ],
+      "matched": 4,
+      "p6_log": "$B4_ROOT/.b4_run/g5/logs/p6.jsonl",
+      "p6_peak_gateway_tree_pids": [
+        47371,
+        47372,
+        47389
+      ],
+      "p6_peak_gateway_tree_rss_kb": 4831616,
+      "pass": true,
+      "proof_handoff_accept_latency_seconds": [
+        5.361586093902588,
+        3.8233349323272705,
+        3.7995851039886475,
+        3.8110129833221436
+      ],
+      "required": 3
+    },
+    "preflight": {
+      "df -h ~": {
+        "out": "Filesystem      Size    Used   Avail Capacity iused ifree %iused  Mounted on\n/dev/disk3s5   1.8Ti   738Gi   1.1Ti    41%    753k   12G    0%   /System/Volumes/Data\n",
+        "rc": 0
+      },
+      "machine": "arm64",
+      "manifest": {
+        "checked_files": 228
+      },
+      "platform": "macOS-26.4.1-arm64-arm-64bit",
+      "provider_rss": [],
+      "sysctl hw.memsize": {
+        "out": "hw.memsize: 274877906944\n",
+        "rc": 0
+      },
+      "sysctl hw.model": {
+        "out": "hw.model: Mac15,14\n",
+        "rc": 0
+      },
+      "sysctl kern.osproductversion": {
+        "out": "kern.osproductversion: 26.4.1\n",
+        "rc": 0
+      },
+      "sysctl machdep.cpu.brand_string": {
+        "out": "machdep.cpu.brand_string: Apple M3 Ultra\n",
+        "rc": 0
+      },
+      "venv": {
+        "local_lock": "$B4_ROOT/local-wheels.lock",
+        "python": "$B4_ROOT/.venv-b4/bin/python",
+        "runtime_lock": "$B4_ROOT/miner/requirements.lock",
+        "wheel_count": 46
+      },
+      "vm_stat": {
+        "out": "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                            13166960.\nPages active:                           1034107.\nPages inactive:                          989422.\nPages speculative:                        39701.\nPages throttled:                              0.\nPages wired down:                       1484412.\nPages purgeable:                           4837.\n\"Translation faults\":                 511681221.\nPages copy-on-write:                   22238466.\nPages zero filled:                 116746243949.\nPages reactivated:                       165285.\nPages purged:                            307626.\nFile-backed pages:                       356338.\nAnonymous pages:                        1706892.\nPages stored in compressor:               20979.\nPages occupied by compressor:              5294.\nDecompressions:                         2551431.\nCompressions:                          42048105.\nPageins:                               11886222.\nPageouts:                                   108.\nSwapins:                                   1171.\nSwapouts:                                  1412.\n",
+        "rc": 0
+      }
+    },
+    "probe": {
+      "probe_key": "cff9007d4d604ad70d112baef20ae225c51bec74b7effa0a5430643df7f46e48"
+    },
+    "production_smoke": {
+      "elapsed_seconds": 0.2618210420041578,
+      "event": "production_shape_smoke",
+      "memory_estimate_bytes": 3825205248,
+      "passed": true,
+      "poll_count": 1,
+      "poll_result": {
+        "block_count": 16271,
+        "block_stored": 16271,
+        "overflow": false,
+        "share_count": 16271,
+        "share_stored": 16271,
+        "status": 0
+      },
+      "probe_key": "cff9007d4d604ad70d112baef20ae225c51bec74b7effa0a5430643df7f46e48",
+      "record_history": [
+        "building",
+        "gpu",
+        "scanned",
+        "proving",
+        "submitted",
+        "released"
+      ],
+      "shape": [
+        8192,
+        8192,
+        4096
+      ],
+      "slots": 2,
+      "verified_submissions": 1
+    },
+    "pytest_fast": {
+      "returncode": 0
+    },
+    "sustained": {
+      "allow_slow_gpu": false,
+      "blocks": 0,
+      "criterion": "sustained_k3_sg",
+      "elapsed_seconds": 600.0399322500016,
+      "expected_shares": 11.192155927419662,
+      "gpu_timeline": {
+        "dispatch_events": 5460,
+        "gpu_idle_gap_pct": 0.05709348145169199,
+        "gpu_idle_gap_seconds": 0.10663595832011197,
+        "gpu_intervals": 5462,
+        "gpu_overlap_seconds": 106.23651241658081,
+        "gpu_span_seconds": 186.77431399999477,
+        "gpu_union_seconds": 186.66767804167466,
+        "max_inflight": 2
+      },
+      "jobs": 17553,
+      "machine": {
+        "cpu_brand": "Apple M3 Ultra",
+        "hostname": "redacted",
+        "hw_model": "Mac15,14",
+        "machine": "arm64",
+        "macos": "26.4.1",
+        "memsize": "274877906944",
+        "platform": "macOS-26.4.1-arm64-arm-64bit",
+        "python": "3.12.14"
+      },
+      "memory_budget_bytes": 3825205248,
+      "ops": 9649863801176064,
+      "pass": true,
+      "peak_rss_bytes": 643547136,
+      "poisson_lower": 2,
+      "poisson_upper": 24,
+      "profile_jsonl": "$B4_ROOT/.b4_run/perf-sustained-profile.jsonl",
+      "proof_submissions": 0,
+      "python_overhead_pct": 0.1084268914510001,
+      "retention": {
+        "logs_retained": 16384,
+        "logs_seen": 52659,
+        "logs_truncated": 36275,
+        "records_retained": 4096,
+        "records_seen": 17553,
+        "records_truncated": 13457,
+        "retained_record_limit": 4096
+      },
+      "seconds_target": 600.0,
+      "shape": {
+        "k": 4096,
+        "m": 8192,
+        "n": 8192,
+        "slots": 2
+      },
+      "share_nbits": "1b00a726",
+      "shares": 13,
+      "stage_ms": {
+        "build": {
+          "count": 4096,
+          "ms_median": 2.2778124985052273,
+          "ms_p99": 2.8378952054481488,
+          "seconds_total": 9.409118605821277
+        },
+        "build_cpu": {
+          "count": 4096,
+          "ms_median": 0.0565420000011585,
+          "ms_p99": 0.09448929999953404,
+          "seconds_total": 0.23672160499994632
+        },
+        "build_native": {
+          "count": 4096,
+          "ms_median": 2.1375420037657022,
+          "ms_p99": 2.719461043307092,
+          "seconds_total": 8.838367049233057
+        },
+        "dispatch": {
+          "count": 4096,
+          "ms_median": 1.3525205067708157,
+          "ms_p99": 1.6169715083378833,
+          "seconds_total": 5.679239945471636
+        },
+        "gpu_wait": {
+          "count": 4096,
+          "ms_median": 64.39147899800446,
+          "ms_p99": 67.33630655362504,
+          "seconds_total": 263.7289503420179
+        },
+        "proof": {
+          "count": 4096,
+          "ms_median": 0.0,
+          "ms_p99": 0.0,
+          "seconds_total": 0.3196724180452293
+        },
+        "scan": {
+          "count": 4096,
+          "ms_median": 0.010625008144415915,
+          "ms_p99": 0.014837150229141132,
+          "seconds_total": 0.043942529111518525
+        },
+        "submit": {
+          "count": 4096,
+          "ms_median": 0.0,
+          "ms_p99": 0.0,
+          "seconds_total": 7.500057108700275e-07
+        }
+      },
+      "studio_eligible": true,
+      "tops": 16.08203601548893,
+      "windows": [
+        {
+          "completed_jobs": 878,
+          "elapsed_seconds": 30.02250137500232,
+          "event": "sustained_window",
+          "expected_shares": 0.5598309636116028,
+          "interval_seconds": 30.02250137500232,
+          "ops": 482685604593664,
+          "peak_rss_bytes": 286851072,
+          "poisson_lower": 0,
+          "poisson_pass": true,
+          "poisson_upper": 4,
+          "shares": 0,
+          "shares_delta": 0,
+          "tops": 16.07746132024706
+        },
+        {
+          "completed_jobs": 1756,
+          "elapsed_seconds": 60.03944741700252,
+          "event": "sustained_window",
+          "expected_shares": 0.5598309636116028,
+          "interval_seconds": 30.0169460420002,
+          "ops": 482685604593664,
+          "peak_rss_bytes": 603602944,
+          "poisson_lower": 0,
+          "poisson_pass": true,
+          "poisson_upper": 4,
+          "shares": 1,
+          "shares_delta": 1,
+          "tops": 16.080436827859916
+        },
+        {
+          "completed_jobs": 2634,
+          "elapsed_seconds": 90.04467108300014,
+          "event": "sustained_window",
+          "expected_shares": 0.5598309636116028,
+          "interval_seconds": 30.00522366599762,
+          "ops": 482685604593664,
+          "peak_rss_bytes": 605454336,
+          "poisson_lower": 0,
+          "poisson_pass": true,
+          "poisson_upper": 4,
+          "shares": 1,
+          "shares_delta": 0,
+          "tops": 16.086719098203247
+        },
+        {
+          "completed_jobs": 3512,
+          "elapsed_seconds": 120.06316179200076,
+          "event": "sustained_window",
+          "expected_shares": 0.5598309636116028,
+          "interval_seconds": 30.018490709000616,
+          "ops": 482685604593664,
+          "peak_rss_bytes": 618004480,
+          "poisson_lower": 0,
+          "poisson_pass": true,
+          "poisson_upper": 4,
+          "shares": 2,
+          "shares_delta": 1,
+          "tops": 16.079609373862944
+        },
+        {
+          "completed_jobs": 4390,
+          "elapsed_seconds": 150.06830937501218,
+          "event": "sustained_window",
+          "expected_shares": 0.5598309636116028,
+          "interval_seconds": 30.00514758301142,
+          "ops": 482685604593664,
+          "peak_rss_bytes": 619659264,
+          "poisson_lower": 0,
+          "poisson_pass": true,
+          "poisson_upper": 4,
+          "shares": 2,
+          "shares_delta": 0,
+          "tops": 16.086759888725066
+        },
+        {
+          "completed_jobs": 5268,
+          "elapsed_seconds": 180.07243825000478,
+          "event": "sustained_window",
+          "expected_shares": 0.5598309636116028,
+          "interval_seconds": 30.004128874992603,
+          "ops": 482685604593664,
+          "peak_rss_bytes": 620986368,
+          "poisson_lower": 0,
+          "poisson_pass": true,
+          "poisson_upper": 4,
+          "shares": 2,
+          "shares_delta": 0,
+          "tops": 16.08730607059769
+        },
+        {
+          "completed_jobs": 6145,
+          "elapsed_seconds": 210.08025187501335,
+          "event": "sustained_window",
+          "expected_shares": 0.559193342924118,
+          "interval_seconds": 30.007813625008566,
+          "ops": 482135848779776,
+          "peak_rss_bytes": 633536512,
+          "poisson_lower": 0,
+          "poisson_pass": true,
+          "poisson_upper": 4,
+          "shares": 4,
+          "shares_delta": 2,
+          "tops": 16.06701023955851
+        },
+        {
+          "completed_jobs": 7023,
+          "elapsed_seconds": 240.08538429200416,
+          "event": "sustained_window",
+          "expected_shares": 0.5598309636116028,
+          "interval_seconds": 30.00513241699082,
+          "ops": 482685604593664,
+          "peak_rss_bytes": 633536512,
+          "poisson_lower": 0,
+          "poisson_pass": true,
+          "poisson_upper": 4,
+          "shares": 4,
+          "shares_delta": 0,
+          "tops": 16.086768019738404
+        },
+        {
+          "completed_jobs": 7901,
+          "elapsed_seconds": 270.09029933300917,
+          "event": "sustained_window",
+          "expected_shares": 0.5598309636116028,
+          "interval_seconds": 30.004915041005006,
+          "ops": 482685604593664,
+          "peak_rss_bytes": 633536512,
+          "poisson_lower": 0,
+          "poisson_pass": true,
+          "poisson_upper": 4,
+          "shares": 4,
+          "shares_delta": 0,
+          "tops": 16.0868845632131
+        },
+        {
+          "completed_jobs": 8780,
+          "elapsed_seconds": 300.1013872080075,
+          "event": "sustained_window",
+          "expected_shares": 0.5604685842990875,
+          "interval_seconds": 30.01108787499834,
+          "ops": 483235360407552,
+          "peak_rss_bytes": 633569280,
+          "poisson_lower": 0,
+          "poisson_pass": true,
+          "poisson_upper": 4,
+          "shares": 4,
+          "shares_delta": 0,
+          "tops": 16.101894153931223
+        },
+        {
+          "completed_jobs": 9658,
+          "elapsed_seconds": 330.10431508300826,
+          "event": "sustained_window",
+          "expected_shares": 0.5598309636116028,
+          "interval_seconds": 30.00292787500075,
+          "ops": 482685604593664,
+          "peak_rss_bytes": 633585664,
+          "poisson_lower": 0,
+          "poisson_pass": true,
+          "poisson_upper": 4,
+          "shares": 4,
+          "shares_delta": 0,
+          "tops": 16.08795003623132
+        },
+        {
+          "completed_jobs": 10536,
+          "elapsed_seconds": 360.1225400000112,
+          "event": "sustained_window",
+          "expected_shares": 0.5598309636116028,
+          "interval_seconds": 30.018224917002954,
+          "ops": 482685604593664,
+          "peak_rss_bytes": 638451712,
+          "poisson_lower": 0,
+          "poisson_pass": true,
+          "poisson_upper": 4,
+          "shares": 5,
+          "shares_delta": 1,
+          "tops": 16.079751748420698
+        },
+        {
+          "completed_jobs": 11414,
+          "elapsed_seconds": 390.1257442920032,
+          "event": "sustained_window",
+          "expected_shares": 0.5598309636116028,
+          "interval_seconds": 30.003204291992006,
+          "ops": 482685604593664,
+          "peak_rss_bytes": 638500864,
+          "poisson_lower": 0,
+          "poisson_pass": true,
+          "poisson_upper": 4,
+          "shares": 5,
+          "shares_delta": 0,
+          "tops": 16.087801819304183
+        },
+        {
+          "completed_jobs": 12292,
+          "elapsed_seconds": 420.14444529201137,
+          "event": "sustained_window",
+          "expected_shares": 0.5598309636116028,
+          "interval_seconds": 30.01870100000815,
+          "ops": 482685604593664,
+          "peak_rss_bytes": 638795776,
+          "poisson_lower": 0,
+          "poisson_pass": true,
+          "poisson_upper": 4,
+          "shares": 6,
+          "shares_delta": 1,
+          "tops": 16.079496730838983
+        },
+        {
+          "completed_jobs": 13170,
+          "elapsed_seconds": 450.1624442500033,
+          "event": "sustained_window",
+          "expected_shares": 0.5598309636116028,
+          "interval_seconds": 30.01799895799195,
+          "ops": 482685604593664,
+          "peak_rss_bytes": 638877696,
+          "poisson_lower": 0,
+          "poisson_pass": true,
+          "poisson_upper": 4,
+          "shares": 7,
+          "shares_delta": 1,
+          "tops": 16.079872787961254
+        },
+        {
+          "completed_jobs": 14048,
+          "elapsed_seconds": 480.1823629170103,
+          "event": "sustained_window",
+          "expected_shares": 0.5598309636116028,
+          "interval_seconds": 30.019918667007005,
+          "ops": 482685604593664,
+          "peak_rss_bytes": 641318912,
+          "poisson_lower": 0,
+          "poisson_pass": true,
+          "poisson_upper": 4,
+          "shares": 8,
+          "shares_delta": 1,
+          "tops": 16.07884451479721
+        },
+        {
+          "completed_jobs": 14925,
+          "elapsed_seconds": 510.1874514170049,
+          "event": "sustained_window",
+          "expected_shares": 0.559193342924118,
+          "interval_seconds": 30.0050884999946,
+          "ops": 482135848779776,
+          "peak_rss_bytes": 643055616,
+          "poisson_lower": 0,
+          "poisson_pass": true,
+          "poisson_upper": 4,
+          "shares": 10,
+          "shares_delta": 2,
+          "tops": 16.068469479097278
+        },
+        {
+          "completed_jobs": 15803,
+          "elapsed_seconds": 540.2055100420112,
+          "event": "sustained_window",
+          "expected_shares": 0.5598309636116028,
+          "interval_seconds": 30.018058625006233,
+          "ops": 482685604593664,
+          "peak_rss_bytes": 643448832,
+          "poisson_lower": 0,
+          "poisson_pass": true,
+          "poisson_upper": 4,
+          "shares": 11,
+          "shares_delta": 1,
+          "tops": 16.079840825934284
+        },
+        {
+          "completed_jobs": 16681,
+          "elapsed_seconds": 570.2237155000039,
+          "event": "sustained_window",
+          "expected_shares": 0.5598309636116028,
+          "interval_seconds": 30.018205457992735,
+          "ops": 482685604593664,
+          "peak_rss_bytes": 643514368,
+          "poisson_lower": 0,
+          "poisson_pass": true,
+          "poisson_upper": 4,
+          "shares": 12,
+          "shares_delta": 1,
+          "tops": 16.07976217196364
+        },
+        {
+          "completed_jobs": 17553,
+          "elapsed_seconds": 600.0399322500016,
+          "event": "sustained_window",
+          "expected_shares": 0.5560052394866943,
+          "interval_seconds": 29.816216749997693,
+          "ops": 479387069710336,
+          "partial": true,
+          "peak_rss_bytes": 643547136,
+          "poisson_lower": 0,
+          "poisson_pass": true,
+          "poisson_upper": 4,
+          "shares": 13,
+          "shares_delta": 1,
+          "tops": 16.078064958069273
+        }
+      ]
+    }
+  }
+}

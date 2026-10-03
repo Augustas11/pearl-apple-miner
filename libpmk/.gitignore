@@ -1,0 +1,6 @@
+.build/
+.swiftpm/
+tests/reference/target/
+tests/work/
+.build-*/
+__pycache__/

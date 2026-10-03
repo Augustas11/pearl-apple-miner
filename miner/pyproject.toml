@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pmk-miner"
+version = "0.1.0"
+requires-python = ">=3.12"
+description = "Native Pearl K3-SG orchestration"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pmk_miner*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

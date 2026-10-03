@@ -1,0 +1,22 @@
+[package]
+name = "v4-oracle"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Standalone crate (not part of any workspace).
+[workspace]
+
+[dependencies]
+# Pearl's public prequant helpers (exact_norms, open_prequant) come straight from the crate.
+zk-pow = { path = "../../../vendor/pearl-fp8/zk-pow" }
+anyhow = "1.0.98"
+serde = { version = "1.0", features = ["derive"] }
+blake3 = "1.8"
+rand = "0.9.2"
+rand_chacha = "0.9"
+rayon = "1"
+
+[profile.release]
+opt-level = 3
+debug = false

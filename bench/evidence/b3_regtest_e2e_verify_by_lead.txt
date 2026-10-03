@@ -1,0 +1,21 @@
+[pmk-e2e] waiting for GPU lock /tmp/pmm-gpu-bench.lock
+[pmk-e2e] GPU lock acquired
+[pmk-e2e] writing evidence to $PMK_ROOT/bench/evidence/b3_regtest_e2e.txt
+[pmk-e2e] started pearld pid=28685 log=miner/.pmk_regtest/logs/pearld.out
+[pmk-e2e] pearld ready height=0 bits=1e010000 cert=3
+[pmk-e2e] started gateway pid=28689 log=miner/.pmk_regtest/logs/gateway.log
+[pmk-e2e] started miner pid=28700 log=miner/.pmk_regtest/logs/miner.log
+[pmk-e2e] height=0 goal=3
+[pmk-e2e] height=0 goal=3
+[pmk-e2e] height=0 goal=3
+[pmk-e2e] height=1 goal=3
+[pmk-e2e] height=1 goal=3
+[pmk-e2e] height=2 goal=3
+[pmk-e2e] height=2 goal=3
+[pmk-e2e] height=2 goal=3
+[pmk-e2e] height=3 goal=3
+[pmk-e2e] RESULT accepted_blocks=4 coinbase_ok=True corrupted_certificate_rejection=True miner_graceful_stop=True
+exit 0
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+74 passed, 1 warning in 57.33s

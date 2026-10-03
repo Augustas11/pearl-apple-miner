@@ -1,0 +1,98 @@
+B1 pmkcore verification
+2026-10-02T10:07:47.143370+00:00
+rustc 1.98.0 (88d9e12ae 2026-08-18) (Homebrew)
+Reference Pearl HEAD: 7039e66f3c44f1541cb0e85328061e619ec5904d
+Command: RAYON_NUM_THREADS=2 cargo test --offline -j 2 -- --nocapture --test-threads=1
+Exit status: 0; 13 integration tests; 0 failed; 0 ignored
+
+Scope: correctness only; no network, SSH, GPU, or node acceptance run.
+Rank64 caveat: upstream plain verifier omits check_rank_penalty; pmkcore rejects rank64.
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.27s
+     Running unittests src/lib.rs (target/debug/deps/pmkcore-a433d5096617c502)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/abi_b1.rs (target/debug/deps/abi_b1-2501e8a79aa1130f)
+
+running 2 tests
+test b1_config_builder_rejects_bad_inputs ... ok
+test b1_oracle_tile_and_buffer_conventions ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.28s
+
+     Running tests/b1.rs (target/debug/deps/b1-2fc625558ea9629b)
+
+running 5 tests
+test config_builders_enforce_v1_patterns_and_shapes ... ok
+test oracle_matches_zk_pow_reference_first_tile ... ok
+test random_finds_build_plain_proofs_that_python_accepts ... 40 random jobs (20 NA + 20 SG): 483 finds, all Python cert-v3 accepted at non-saturated share bound
+pearl_mining_Na: pearl_mining.mine matches oracle
+pearl_mining_Sg: pearl_mining.mine matches oracle
+wrong_header: ensure_eq failed: Hash A mismatch, job_key=[94, 132, 0, 3, 247, 227, 236, 240, 48, 144, 69, 69, 222, 103, 218, 92, 224, 99, 17, 151, 132, 80, 7, 41, 188, 78, 57, 247, 6, 62, 103, 185] || left = [12, 20, 31, 107, 75, 78, 121, 254, 69, 255, 112, 251, 61, 151, 208, 237, 176, 27, 10, 126, 89, 252, 7, 109, 179, 101, 185, 123, 181, 148, 55, 137], right = [114, 99, 123, 14, 100, 57, 172, 212, 11, 98, 86, 48, 85, 236, 57, 68, 111, 40, 234, 127, 144, 15, 126, 131, 66, 82, 113, 124, 190, 71, 31, 200]
+wrong_config_rank64: ensure_eq failed: Hash A mismatch, job_key=[7, 178, 27, 90, 33, 111, 67, 14, 106, 160, 200, 69, 220, 164, 92, 255, 223, 86, 80, 190, 210, 96, 146, 179, 37, 107, 64, 61, 31, 124, 119, 217] || left = [178, 222, 115, 28, 188, 129, 105, 23, 105, 35, 144, 217, 51, 166, 121, 88, 232, 94, 6, 156, 44, 156, 104, 16, 60, 130, 172, 155, 168, 224, 18, 127], right = [114, 99, 123, 14, 100, 57, 172, 212, 11, 98, 86, 48, 85, 236, 57, 68, 111, 40, 234, 127, 144, 15, 126, 131, 66, 82, 113, 124, 190, 71, 31, 200]
+wrong_config_rank256: ensure_eq failed: Hash A mismatch, job_key=[19, 60, 226, 194, 236, 79, 244, 194, 87, 175, 33, 112, 119, 177, 111, 18, 145, 131, 92, 66, 68, 226, 34, 242, 212, 234, 142, 176, 12, 81, 32, 228] || left = [84, 103, 5, 84, 141, 128, 32, 158, 87, 31, 247, 35, 240, 60, 63, 119, 186, 166, 224, 159, 47, 177, 160, 255, 108, 87, 118, 27, 2, 159, 217, 6], right = [114, 99, 123, 14, 100, 57, 172, 212, 11, 98, 86, 48, 85, 236, 57, 68, 111, 40, 234, 127, 144, 15, 126, 131, 66, 82, 113, 124, 190, 71, 31, 200]
+illegal_offset: pattern parsing error: offset 8 is not valid for pattern
+legacy_unsalted: Jackpot condition not satisfied: hash does not meet difficulty target
+raw_signal65: Matrix value 65 out of range [-64, 64]
+491 verifier cases passed
+ok
+test transcript_matches_stored_k3sg_vectors ... K3SG v1_256x256x4096: 4 global-offset transcripts + hashes PASS
+K3SG v2_256x256x4096_pm127: 4 global-offset transcripts + hashes PASS
+K3SG v3_128x128x65536: 4 global-offset transcripts + hashes PASS
+K3SG v4_pearl_c64: 4 global-offset transcripts + hashes PASS
+ok
+test verifier_rejects_negative_cases ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 30.77s
+
+     Running tests/intermediates.rs (target/debug/deps/intermediates-81466b0474d7b72f)
+
+running 1 test
+test every_intermediate_matches_independent_python_oracle ... Na: all 26 intermediate fields independently verified; export BLAKE3=08f2e0c3d6a8c44440499a337526a7afd3bc10a355e2fb0168805124a635ffbe
+Sg: all 26 intermediate fields independently verified; export BLAKE3=127d5b12c565edeec6cade3b474eb6e3b914dc58ab163ce76bfb210215dd3317
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.93s
+
+     Running tests/reference.rs (target/debug/deps/reference-b410844a16fe1df7)
+
+running 5 tests
+test c_abi_and_errors ... ok
+test generated_jobs_fixed_a_fresh_b ... ok
+test reference_miner_jobs_match ... ok
+test signal_distribution ... chi2 = 129.4 (128 dof)
+ok
+test tree_root_matches_pearl_blake3 ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 24.37s
+
+   Doc-tests pmkcore
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+Command: cargo build --offline --release -j 2
+Exit status: 0
+   Compiling pmkcore v0.1.0 ($PMK_ROOT/pmkcore)
+    Finished `release` profile [optimized] target(s) in 4.37s
+
+Command: cargo clippy --offline --all-targets --no-deps -j 2 -- -D warnings
+Exit status: 0
+    Checking pmkcore v0.1.0 ($PMK_ROOT/pmkcore)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.09s
+
+Command: RAYON_NUM_THREADS=2 ../.venv/bin/python -B tests/ffi_smoke.py
+Exit status: 0
+C ABI pattern=0: cdylib create/tile/scan/proof/export/free, F2 roots, Python cert-v3 verification PASS
+C ABI pattern=1: cdylib create/tile/scan/proof/export/free, F2 roots, Python cert-v3 verification PASS
+
+Command: cargo fmt --check
+Exit status: 0
+
+Command: cc -std=c11 -Wall -Wextra -Werror -fsyntax-only tests/abi_layout.c
+Exit status: 0

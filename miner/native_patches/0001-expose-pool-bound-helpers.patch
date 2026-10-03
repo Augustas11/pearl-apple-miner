@@ -1,0 +1,52 @@
+--- a/py-pearl-mining/src/lib.rs
++++ b/py-pearl-mining/src/lib.rs
+@@ -18,7 +18,7 @@ use zk_pow::api::proof::{
+     IncompleteBlockHeader, MMAType, MiningConfiguration, MoEConfig, PeriodicPattern,
+     PublicProofParams, SeedDerivation, ZKProof,
+ };
+-use zk_pow::api::sanity_checks;
++use zk_pow::api::{proof_utils, sanity_checks};
+ use zk_pow::api::{prove, verify};
+ use zk_pow::circuit::pearl_circuit::{PearlRecursion, RecursionCircuit};
+ use zk_pow::ffi::mine::{mine as ffi_mine, mine_moe as ffi_mine_moe};
+@@ -251,9 +251,31 @@ fn penalized_target_bound<'py>(
+     Ok(Some(bound_int))
+ }
+ 
++fn u256_to_py_int<'py>(py: Python<'py>, value: U256) -> PyResult<Bound<'py, PyAny>> {
++    let mut out = [0u8; 32];
++    value.to_little_endian(&mut out);
++    let py_bytes = pyo3::types::PyBytes::new(py, &out);
++    py.get_type::<pyo3::types::PyInt>()
++        .call_method1("from_bytes", (py_bytes, "little"))
++}
++
++#[pyfunction]
++fn nbits_to_difficulty<'py>(py: Python<'py>, nbits: u32) -> PyResult<Bound<'py, PyAny>> {
++    u256_to_py_int(py, proof_utils::nbits_to_difficulty(nbits))
++}
++
++#[pyfunction]
++fn extract_difficulty_bound<'py>(
++    py: Python<'py>,
++    nbits: u32,
++    mining_config: &MiningConfiguration,
++) -> PyResult<Bound<'py, PyAny>> {
++    u256_to_py_int(py, sanity_checks::extract_difficulty_bound(nbits, mining_config))
++}
++
+ /// Map a certificate version to its noise-seed derivation (errors on unknown versions).
+ fn seed_derivation_for(cert_version: u32) -> PyResult<SeedDerivation> {
+     Ok(CertificateVersion::try_from(cert_version)
+         .map_err(value_err)?
+         .seed_derivation())
+ }
+@@ -535,6 +556,8 @@ fn pearl_mining(m: &Bound<'_, pyo3::types::PyModule>) -> PyResult<()> {
+     m.add_function(wrap_pyfunction!(mine, m)?)?;
+     m.add_function(wrap_pyfunction!(mine_moe, m)?)?;
+     m.add_function(wrap_pyfunction!(penalized_target_bound, m)?)?;
++    m.add_function(wrap_pyfunction!(nbits_to_difficulty, m)?)?;
++    m.add_function(wrap_pyfunction!(extract_difficulty_bound, m)?)?;
+     m.add_function(wrap_pyfunction!(py_pad_to_chunk_boundary, m)?)?;
+     // V2 functions (current circuit; MoE and dense proofs)
+     m.add_function(wrap_pyfunction!(generate_proof_v2, m)?)?;

@@ -1,0 +1,68 @@
+ProductName:		macOS
+ProductVersion:		26.5
+BuildVersion:		25F71
+Mac17,3
+B2 correctness only; production 64x64x16x2x2x2; no performance claims
+[0/1] Planning build
+Building for production...
+[0/3] Write swift-version--58304C5D6DBC2206.txt
+Build complete! (0.37s)
+Test Suite 'All tests' started at 2026-10-02 18:23:07.595.
+Test Suite 'libpmkPackageTests.xctest' started at 2026-10-02 18:23:07.595.
+Test Suite 'FailClosedTests' started at 2026-10-02 18:23:07.595.
+Test Case '-[PMKTests.FailClosedTests testProbeRejectsBrokenLayoutAndProductionHash]' started.
+Test Case '-[PMKTests.FailClosedTests testProbeRejectsBrokenLayoutAndProductionHash]' passed (0.185 seconds).
+Test Suite 'FailClosedTests' passed at 2026-10-02 18:23:07.781.
+	 Executed 1 test, with 0 failures (0 unexpected) in 0.185 (0.185) seconds
+Test Suite 'HostTests' started at 2026-10-02 18:23:07.781.
+Test Case '-[PMKTests.HostTests testABI]' started.
+Test Case '-[PMKTests.HostTests testABI]' passed (0.000 seconds).
+Test Case '-[PMKTests.HostTests testStringBoundaries]' started.
+Test Case '-[PMKTests.HostTests testStringBoundaries]' passed (0.000 seconds).
+Test Suite 'HostTests' passed at 2026-10-02 18:23:07.781.
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'KernelTests' started at 2026-10-02 18:23:07.781.
+Test Case '-[PMKTests.KernelTests testCPUOracleMatchesFullJobTilesForReleaseVectors]' started.
+Test Case '-[PMKTests.KernelTests testCPUOracleMatchesFullJobTilesForReleaseVectors]' passed (0.954 seconds).
+Test Case '-[PMKTests.KernelTests testK3SGBenchVectorsMatchOracleSlotsAndCounters]' started.
+Test Case '-[PMKTests.KernelTests testK3SGBenchVectorsMatchOracleSlotsAndCounters]' passed (0.818 seconds).
+Test Suite 'KernelTests' passed at 2026-10-02 18:23:09.553.
+	 Executed 2 tests, with 0 failures (0 unexpected) in 1.772 (1.772) seconds
+Test Suite 'NoiseTests' started at 2026-10-02 18:23:09.554.
+Test Case '-[PMKTests.NoiseTests testCPUAndGPUBlake3SingleBlockKeyedVectors]' started.
+Test Case '-[PMKTests.NoiseTests testCPUAndGPUBlake3SingleBlockKeyedVectors]' passed (0.144 seconds).
+Test Case '-[PMKTests.NoiseTests testGPUK1K2NoiseMatchesReferenceVectors]' started.
+Test Case '-[PMKTests.NoiseTests testGPUK1K2NoiseMatchesReferenceVectors]' passed (12.337 seconds).
+Test Suite 'NoiseTests' passed at 2026-10-02 18:23:22.034.
+	 Executed 2 tests, with 0 failures (0 unexpected) in 12.480 (12.481) seconds
+Test Suite 'PMKTests' started at 2026-10-02 18:23:22.034.
+Test Case '-[PMKTests.PMKTests testCPUOracleKeyedCompressDeterministic]' started.
+Test Case '-[PMKTests.PMKTests testCPUOracleKeyedCompressDeterministic]' passed (0.000 seconds).
+Test Suite 'PMKTests' passed at 2026-10-02 18:23:22.034.
+	 Executed 1 test, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'libpmkPackageTests.xctest' passed at 2026-10-02 18:23:22.034.
+	 Executed 8 tests, with 0 failures (0 unexpected) in 14.438 (14.439) seconds
+Test Suite 'All tests' passed at 2026-10-02 18:23:22.034.
+	 Executed 8 tests, with 0 failures (0 unexpected) in 14.438 (14.440) seconds
+G3: initializing production context
+G3: context ready
+G3: loading v1_256x256x4096
+G3: PASS v1_256x256x4096 31 cases
+G3: loading v2_256x256x4096_pm127
+G3: PASS v2_256x256x4096_pm127 31 cases
+G3: loading v3_128x128x65536
+G3: PASS v3_128x128x65536 31 cases
+G3: loading v4_pearl_c64
+G3: PASS v4_pearl_c64 1 cases
+◇ Test run started.
+↳ Testing Library Version: 1902
+↳ Target Platform: arm64e-apple-macos14.0
+✔ Test run with 0 tests in 0 suites passed after 0.001 seconds.
+probe cache key 21e9090831a0a154266105015dbb096c76c46ec9e8dfaa0e055f5856980992b1
+G3 full-slot compare: PASS 50 jobs
+boundary/zero/simultaneous/overflow: PASS
+invalid inputs and 3-inflight cap: PASS
+  config: hash_tile_h=4 hash_tile_w=8 rows.shape=[(8, 4), (32, 1), (32, 1)] cols.shape=[(1, 2), (8, 4), (32, 1)] bytes=00080000800000000703000000000001030300000000000000000000000000000000000000000000000000000000000000000000
+end-to-end GPU find -> PlainProof verify: PASS
+libpmk integration: PASS
+exit 0

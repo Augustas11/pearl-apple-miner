@@ -1,0 +1,16 @@
+[package]
+name = "f2_jobprep"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+pmkcore = { path = "../../pmkcore" }
+pearl-blake3 = { path = "../../vendor/pearl/pearl-blake3" }
+blake3 = "1.8"
+rayon = "1.11"
+
+[profile.release]
+opt-level = 3
+codegen-units = 1
+lto = "thin"

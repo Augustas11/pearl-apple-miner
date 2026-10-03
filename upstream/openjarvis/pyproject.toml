@@ -1,0 +1,19 @@
+[build-system]
+requires = ["uv_build>=0.9.18,<0.13.0"]
+build-backend = "uv_build"
+
+[project]
+name = "oj-pearl-mps"
+version = "0.1.0"
+description = "Standalone OpenJarvis apple-mps-pearl / cpu-pearl miner loops, ported to current Pearl"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+requires-python = ">=3.12"
+# Installed from vendor/pearl by scripts/setup_env.sh (not on PyPI at the pinned rev).
+dependencies = [
+  "py-pearl-mining==0.3.1",
+  "miner-base",
+  "pearl-gateway",
+  "miner-utils",
+  "torch==2.11.0",
+]

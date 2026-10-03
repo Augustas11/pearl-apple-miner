@@ -1,0 +1,22 @@
+== cargo
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.33s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.49s
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.55s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+== libpmk
+G3: PASS v3_128x128x65536 31 cases
+G3: loading v4_pearl_c64
+G3: PASS v4_pearl_c64 1 cases
+G3 full-slot compare: PASS 50 jobs
+boundary/zero/simultaneous/overflow: PASS
+invalid inputs and 3-inflight cap: PASS
+end-to-end GPU find -> PlainProof verify: PASS
+libpmk integration: PASS
+== pytest
+.......................................................................  [100%]
+143 passed in 75.29s (0:01:15)
+== regtest e2e
+[pmk-e2e] RESULT accepted_blocks=4 coinbase_ok=True corrupted_certificate_rejection=True miner_graceful_stop=True
+exit 0

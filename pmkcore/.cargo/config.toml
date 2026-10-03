@@ -1,0 +1,5 @@
+# aes 0.8 uses the ARMv8 AES instructions on aarch64 only with this cfg (runtime-detected via cpufeatures).
+# Without it the software AES backend runs at ~0.16 GB/s; src/lib.rs refuses to compile in that case.
+[build]
+rustflags = ["--cfg", "aes_armv8"]
+rustdocflags = ["--cfg", "aes_armv8"]
