@@ -262,7 +262,7 @@ async def mine(args,config):
         if native: native.close()
 
 
-def main():
+def main(*, standalone=False, pool_log=None, admission_refresh=None):
     parser=argparse.ArgumentParser()
     parser.add_argument('--mode',choices=['solo','pool'],required=True)
     parser.add_argument('--gateway')
@@ -275,7 +275,7 @@ def main():
     parser.add_argument('--resume-hook',type=Path,default=_env_path('B4_LAB_RESUME_HOOK','PMK_B4_LAB_RESUME_HOOK','PMK_LAB_RESUME_HOOK'))
     parser.add_argument('--resume-report',type=Path,default=_env_path('B4_LAB_RESUME_REPORT','PMK_B4_LAB_RESUME_REPORT','PMK_LAB_RESUME_REPORT'))
     args=parser.parse_args()
-    lab=LabSession(token=args.lab_owner_token,resume_hook=args.resume_hook,report=args.resume_report)
+    lab=None if standalone else LabSession(token=args.lab_owner_token,resume_hook=args.resume_hook,report=args.resume_report)
     config=None; native_redaction_config=None
     try:
         if sys.version_info[:2]!=(3,12): raise RuntimeError('Python 3.12 required')
@@ -289,18 +289,22 @@ def main():
                 toml_path=args.config,env_path=config.get('gateway',{}).get('env_file'))
         except Exception:
             native_redaction_config=None
-        lab.check()
+        if lab is not None:
+            lab.check()
         try:
             with gpu_lock(log):
                 if args.mode == 'pool':
                     from .pool_runtime import mine_pool
-                    asyncio.run(mine_pool(args,config,log,memory_limits))
+                    admission_deadline = admission_refresh() if admission_refresh is not None else None
+                    asyncio.run(mine_pool(args,config,pool_log or log,memory_limits,
+                                          admission_refresh=admission_refresh,
+                                          admission_deadline=admission_deadline))
                 else:
                     if not args.gateway:
                         raise ValueError('solo mode requires --gateway')
                     asyncio.run(mine(args,config))
         finally:
-            outcome=lab.finish()
+            outcome=lab.finish() if lab is not None else None
             if outcome: log('provider_resume',**outcome)
     except Exception as exc:
         fields={'error_type':type(exc).__name__}

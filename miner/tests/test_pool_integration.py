@@ -25,6 +25,25 @@ def load_harness():
     return module
 
 
+@pytest.mark.parametrize('already_exited', [False, True])
+def test_mock_cleanup_handles_denied_process_group(monkeypatch, already_exited):
+    harness = load_harness()
+    process = subprocess.Popen([sys.executable, '-c',
+        'pass' if already_exited else 'import time; time.sleep(60)'], start_new_session=True)
+    try:
+        if already_exited:
+            process.wait(timeout=10)
+        def denied(*_args):
+            raise PermissionError('process group is no longer signalable')
+        monkeypatch.setattr(harness.os, 'killpg', denied)
+        harness.terminate(process)
+        assert process.poll() is not None
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=10)
+
+
 def test_mock_pool_rejects_wrong_job_ids() -> None:
     harness = load_harness()
 

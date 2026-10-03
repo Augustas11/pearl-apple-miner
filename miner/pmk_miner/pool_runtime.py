@@ -37,7 +37,7 @@ def rejection_alarm(outcome, accepted_before):
     return None
 
 
-async def mine_pool(args, config, log, memory_limits):
+async def mine_pool(args, config, log, memory_limits, *, admission_refresh=None, admission_deadline=None):
     wallet = load_wallet(args.wallet_file, args.wallet_allowlist or config.get('pool', {}).get('wallet_allowlist'))
     emit = log
     def log(event, **fields):
@@ -78,7 +78,19 @@ async def mine_pool(args, config, log, memory_limits):
         loop.add_signal_handler(sig, stop.set)
     client = PoolClient(args.pool_url, wallet, args.worker,
                         difficulty_floor=pool_cfg.get('difficulty_floor', 10000), log=log)
-    telemetry = RoutineTelemetry(log, seconds=float(run.get('telemetry_interval_seconds', 5)),
+    def telemetry_log(event, **fields):
+        if event == 'routine_telemetry':
+            elapsed = max(time.monotonic() - started, 1e-9)
+            rate = completed_ops / elapsed
+            target = client.latest.target if client.latest else 0
+            shares_per_second = rate / 2 * target / 2**256
+            fields.update(jobs_per_second=completed_jobs / elapsed, tops=rate / 1e12,
+                accepted=counts['accepted'],
+                rejected=sum(counts[k] for k in ('stale', 'duplicate', 'low-difficulty', 'invalid')),
+                expected_share_seconds=1 / shares_per_second if shares_per_second else None)
+        log(event, **fields)
+
+    telemetry = RoutineTelemetry(telemetry_log, seconds=float(run.get('telemetry_interval_seconds', 5)),
         routine_sink=RotatingJsonlSink(state_dir / 'pool-routine.jsonl'))
     native = pipeline = None
     fatal = None
@@ -159,6 +171,12 @@ async def mine_pool(args, config, log, memory_limits):
         native = await asyncio.to_thread(Native)
         pipeline = Pipeline(native, shape, pipeline_log, submission_policy=PoolSubmissionPolicy())
         probes = ProbeSchedule(float(run.get('probe_interval_seconds', 6 * 3600)))
+        def schedule_admission(deadline):
+            if deadline is not None:
+                # Leave a minute to drain jobs before the native admission expires.
+                probes.deadline = min(probes.deadline,
+                    time.monotonic() + max(0, deadline - time.time() - 60))
+        schedule_admission(admission_deadline)
         log('pool_startup', wallet=mask_wallet(wallet),
             shape=dataclasses.asdict(shape), memory_budget_bytes=budget,
             memory_estimate_bytes=estimate, probe_key=native.probe_key)
@@ -167,7 +185,18 @@ async def mine_pool(args, config, log, memory_limits):
                 supervisor.result()
                 break
             if probes.due:
+                if admission_refresh is not None:
+                    try:
+                        admission_deadline = await asyncio.to_thread(
+                            admission_refresh, force=True, cancelled=stop.is_set)
+                    except InterruptedError:
+                        if stop.is_set():
+                            break
+                        raise
+                if stop.is_set():
+                    break
                 await asyncio.to_thread(probes.refresh, native)
+                schedule_admission(admission_deadline)
             source = client.latest
             if source is None:
                 await asyncio.sleep(.05)

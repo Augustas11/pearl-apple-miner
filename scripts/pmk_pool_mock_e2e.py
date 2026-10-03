@@ -25,7 +25,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 PYTHON = ROOT / ".venv/bin/python"
 DIFF1_TARGET = 0xFFFF << 208
-DEFAULT_WALLET = "prl1pmockpoolwallet000000000000000000000000000000000000000000"
+DEFAULT_WALLET = "prl1mockpoolwallet000000000000000000000000000000000000000000"
 
 
 def secure_dir(path: Path) -> None:
@@ -519,31 +519,27 @@ def bound_trace_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def terminate(process: subprocess.Popen[str]) -> None:
-    try:
-        os.killpg(process.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
+    def signal_miner(signum: int) -> None:
+        try:
+            os.killpg(process.pid, signum)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            # The miner can exit between poll() and killpg(). Do not pursue a
+            # group we cannot signal; the Popen handle still identifies our child.
+            if process.poll() is None:
+                process.send_signal(signum)
+
+    signal_miner(signal.SIGTERM)
     deadline = time.time() + 10
     while process.poll() is None and time.time() < deadline:
         time.sleep(0.1)
-    if process.poll() is None:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-    else:
-        # The direct miner may have exited while leaving a worker in its group.
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+    # The direct miner may have exited while leaving a worker in its group.
+    signal_miner(signal.SIGKILL)
     try:
         process.wait(timeout=2)
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        signal_miner(signal.SIGKILL)
         process.wait(timeout=2)
 
 

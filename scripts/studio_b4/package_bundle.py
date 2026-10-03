@@ -53,7 +53,7 @@ for path in [out / 'bin/g3-admit', out / 'bin/k3-alone', out / 'bin/libpmkcore.d
     assert minimums and all(tuple(map(int, v.split('.')[:2])) <= limit for v in minimums), (path, minimums)
     deps = subprocess.check_output(['otool', '-L', str(path)], text=True)
     linked = deps.splitlines()[2 if path.suffix == '.dylib' else 1:]
-    assert '/opt/homebrew/' not in '\n'.join(linked) and '/Users/' not in '\n'.join(linked), deps
+    assert '/opt/homebrew/' not in '\n'.join(linked) and not re.search(r'/(Users|home)/', '\n'.join(linked)), deps
     assert 'arm64' in subprocess.check_output(['lipo', '-archs', str(path)], text=True)
     audit[str(path.relative_to(out))] = {'minos':minimums, 'dependencies':deps.splitlines()[1:]}
 requirements=[]
@@ -75,7 +75,7 @@ for whl in sorted((out/'wheels').glob('*.whl')):
                 limit = (14, 0) if name == 'py-pearl-mining' else (26, 4)
                 assert mins and all(tuple(map(int,v.split('.')[:2])) <= limit for v in mins), (whl,n,mins)
                 deps=subprocess.check_output(['otool','-L',str(temporary)],text=True)
-                assert '/opt/homebrew/' not in deps and '/Users/' not in '\n'.join(deps.splitlines()[1:]), (whl,n,deps)
+                assert '/opt/homebrew/' not in deps and not re.search(r'/(Users|home)/', '\n'.join(deps.splitlines()[1:])), (whl,n,deps)
                 assert 'arm64' in subprocess.check_output(['lipo','-archs',str(temporary)],text=True), (whl,n)
                 audit[f'wheels/{whl.name}!/{n}'] = {'minos': mins, 'dependencies': deps.splitlines()[1:]}
     requirement = f'{name}=={version} --hash=sha256:{hashlib.sha256(whl.read_bytes()).hexdigest()}'

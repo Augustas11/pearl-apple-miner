@@ -52,14 +52,14 @@ def test_pool_cli_never_loads_node_credentials_or_logs_arbitrary_errors(monkeypa
     called = []
     def check(_self):
         called.append(True)
-        raise RuntimeError('wallet=prl1private-value secret=private-credential')
+        raise RuntimeError('wallet=prl1secret-value secret=private-credential')
     monkeypatch.setattr(cli.LabSession, 'check', check)
     assert cli.main() == 1
     assert called
     assert not node_calls
     output = capsys.readouterr().out
     assert 'RuntimeError' in output
-    assert 'private-value' not in output
+    assert 'secret-value' not in output
     assert 'private-credential' not in output
 
 

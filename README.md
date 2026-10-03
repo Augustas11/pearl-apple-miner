@@ -1,5 +1,31 @@
 # pmk
 
+## Quick start
+
+Requirements: an Apple Silicon Mac (M1–M4; M5 is experimental), macOS 14+, Xcode Command Line Tools, Git, [rustup](https://rustup.rs/), and [uv](https://docs.astral.sh/uv/).
+
+```sh
+git clone https://github.com/Augustas11/pearl-apple-miner.git
+cd pearl-apple-miner
+scripts/install.sh
+```
+
+When installation passes its GPU correctness check, start mining with your Pearl wallet:
+
+```sh
+scripts/mine.sh --wallet '<your-prl-wallet>'
+```
+
+Payouts: check your wallet on https://pearl.herominers.com/. Direct stats URL (check; unverified): `https://pearl.herominers.com/api/stats_address?address=<wallet>`.
+
+Expect full, sustained GPU use. Press Ctrl-C once to stop cleanly. An 80-GPU-core M3 Ultra measured about 16 TOPS: roughly one share per 18 minutes and 0.2 PRL/day at the measured difficulty. For other M1–M4 chips, a rough estimate is 18 min × (80 / GPU cores) per share and 0.2 × (GPU cores / 80) PRL/day; real speed and rewards vary.
+
+Power cost: at full GPU load a Mac draws more power than the PRL it earns is worth at today's price (about $0.20/day of PRL on an M3 Ultra). Mine because you want to back the network or expect PRL to rise, not for profit today.
+
+No wallet yet? Get the official Pearl Wallet from https://github.com/pearl-research-labs/pearl/releases.
+
+Beta: open an issue or DM [@_aug11_](https://x.com/_aug11_) on X.
+
 A Pearl (PRL) proof-of-useful-work miner for Apple Silicon, written for Metal. It mines the cert v3 scheme only.
 
 pmk builds a Pearl job, runs the noisy int8 GEMM and hash search on the GPU, and turns a hit into a PlainProof
@@ -83,6 +109,20 @@ Run it on an otherwise idle machine.
 
 ## Run in pool mode
 
+The quick-start wrapper defaults to Singapore and a sanitized short hostname as the worker name:
+
+```sh
+scripts/mine.sh --wallet '<your-prl-wallet>' --worker my-mac --pool stratum+tcp://de.pearl.herominers.com:1200
+```
+
+It keeps owner-only wallet/allowlist files, admission, and run state in `~/.pmk/` (`PMK_HOME` can override
+that directory). It chooses a smaller job on 8 GB Macs or GPUs with fewer than 32 cores and prints jobs/s, TOPS, accepted/rejected shares,
+and estimated time per share about once a minute. Rates are averages since startup; share arrivals are random.
+It refreshes expired G3 admission at startup and at the six-hour probe, without a lab token or resume hook.
+Rerun `scripts/install.sh` after updating the checkout. Builds can take a while; no virtualenv activation is needed.
+
+For manual configuration:
+
 ```sh
 PYTHONPATH=miner .venv/bin/python -m pmk_miner \
   --mode pool --pool-url stratum+tcp://<region>.pearl.herominers.com:1200 \
@@ -93,6 +133,9 @@ PYTHONPATH=miner .venv/bin/python -m pmk_miner \
 
 The wallet file holds one wallet. The allowlist holds the wallets you approve; pmk refuses any other. Wallets are
 masked in logs. See `miner/README.md` for the config file.
+
+HeroMiners port 1200 regions listed in the pool KB are: `de`, `fr`, `es`, `fi`, `ru`, `ca`, `us`, `us2`, `us3`,
+`mx`, `br`, `kz`, `hk`, `kr`, `in`, `sg`, `tr`, and `au`. Replace `<region>` above with the nearest one.
 
 ## Solo and regtest
 
