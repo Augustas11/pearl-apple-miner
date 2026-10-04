@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Solo CLI; all network requests stay on loopback."""
 from __future__ import annotations
 import argparse
@@ -16,6 +17,7 @@ from .runtime import gpu_lock, LabSession, RunState, ProbeSchedule, RoutineTelem
 from .native import Native, NativeError
 from .cli import add_desktop_flags
 from .desktop import mining_session
+from .v4_admission import configured_v4_admission, V4AdmissionError, V4_G3_ADMISSION_ENV
 from .pipeline import Pipeline, Shape, FatalDeviceError
 from .transport import (GatewayClient, NodeRpcConfig, NodeRpcClient, GatewayLogTail,
                         SubmissionTracker, SubmissionOutcome, FatalCertVersionError,
@@ -35,6 +37,15 @@ def log(event,**fields):
 def memory_limits(shape):
     ram=int(subprocess.check_output(['sysctl','-n','hw.memsize']))
     return ram//4,shape.validate(ram)
+
+
+async def cancel_pending_tasks(tasks):
+    """Cancel and drain a stable snapshot of owned background tasks."""
+    snapshot=tuple(tasks)
+    for task in snapshot:
+        if not task.done(): task.cancel()
+    if snapshot:
+        await asyncio.gather(*snapshot,return_exceptions=True)
 
 async def mine(args,config):
     shape=Shape(**{k:config.get(k,v) for k,v in dataclasses.asdict(Shape()).items()})
@@ -86,6 +97,11 @@ async def mine(args,config):
                     raise FatalDeviceError('gateway target does not match immutable header')
                 candidate.authorize_coinbase(approved_script_hex=script)
                 latest=candidate
+            except V4AdmissionError as exc:
+                fatal=exc; stop.set()
+                if pipeline: pipeline.cancel()
+                log('alert',severity='P0',reason='v4_admission')
+                return
             except (FatalCertVersionError,FatalDeviceError) as exc:
                 fatal=exc; stop.set()
                 if pipeline: pipeline.cancel()
@@ -112,7 +128,8 @@ async def mine(args,config):
 
         async def track(job,tail,submission_id=None):
             nonlocal accepted,fatal
-            outcome=await SubmissionTracker(node,gateway_log=tail).track(job)
+            timeout=1800.0 if job.cert_version==4 else 120.0
+            outcome=await SubmissionTracker(node,gateway_log=tail,timeout_seconds=timeout).track(job)
             log('outcome',classification=str(outcome),template=job.template_identity)
             if outcome in {SubmissionOutcome.PROVING_ERROR,SubmissionOutcome.TRANSPORT}:
                 submitted.discard(job.template_identity)
@@ -187,7 +204,9 @@ async def mine(args,config):
             try:
                 header=bytes.fromhex(entry.header_hex)
                 bits=int.from_bytes(header[72:76],'little')
-                job=GatewayJob(header,bits_to_target(bits),3,submission_id=entry.submission_id)
+                job=GatewayJob(header,bits_to_target(bits),entry.cert_version,
+                               submission_id=entry.submission_id,
+                               ancestor_headers=entry.ancestor_headers)
             except ValueError:
                 ledger.finish(entry.submission_id,SubmissionOutcome.UNKNOWN_SUBMISSION)
                 raise FatalDeviceError('invalid outstanding ledger entry') from None
@@ -201,7 +220,9 @@ async def mine(args,config):
         if fatal: raise fatal
 
         def current(job):
-            return not stop.is_set() and latest is not None and latest.template_identity==job.template_identity
+            return (not stop.is_set() and latest is not None
+                    and latest.template_identity==job.template_identity
+                    and latest.cert_version==job.cert_version)
 
         while not stop.is_set():
             if desktop and not await desktop.wait_ready(stop.is_set): break
@@ -249,8 +270,7 @@ async def mine(args,config):
             for result in results:
                 if isinstance(result,BaseException): raise result
         pipeline.cancel()
-        if tracking:
-            await asyncio.gather(*tracking)
+        await cancel_pending_tasks(tracking)
         if fatal: raise fatal
         state.flush(completed_ops=completed_ops,elapsed_seconds=time.monotonic()-start,
             window_expected=window_expected,window_shares=window_shares,daily=daily)
@@ -262,8 +282,7 @@ async def mine(args,config):
             await asyncio.gather(power_task,return_exceptions=True)
         await asyncio.gather(poller,return_exceptions=True)
         if pipeline: pipeline.cancel()
-        if tracking:
-            await asyncio.gather(*tracking,return_exceptions=True)
+        await cancel_pending_tasks(tracking)
         state.flush()
         telemetry.flush()
         if native: native.close()
@@ -304,7 +323,7 @@ def main(*, standalone=False, pool_log=None, admission_refresh=None):
         if lab is not None:
             lab.check()
         try:
-            with gpu_lock(log), mining_session(
+            with configured_v4_admission(config,args.config), gpu_lock(log), mining_session(
                     on_battery=args.on_battery,intensity=args.intensity,log=log) as args.desktop:
                 if args.benchmark is not None:
                     from .benchmark import run_benchmark
@@ -326,6 +345,9 @@ def main(*, standalone=False, pool_log=None, admission_refresh=None):
         fields={'error_type':type(exc).__name__}
         if isinstance(exc,(NativeError,FatalDeviceError)):
             fields.update(_native_error_fields(exc,native_redaction_config))
+        elif isinstance(exc,V4AdmissionError):
+            fields.update(gate='v4_admission',error_message=str(exc),
+                          admission_env=V4_G3_ADMISSION_ENV,admission_config='v4.admission_file')
         log('fatal',**fields)
         return 1
     return 0

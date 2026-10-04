@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 import Foundation
 import Metal
 import CryptoKit
@@ -76,12 +77,16 @@ final class CallbackBarrier {
         group.leave()
     }
 
+    func isCallbackThread() -> Bool {
+        lock.lock()
+        let value = callbackThreadID == currentThreadID()
+        lock.unlock()
+        return value
+    }
+
     /// Returns false instead of deadlocking when called by the callback itself.
     func wait() -> Bool {
-        lock.lock()
-        let isCallbackThread = callbackThreadID == currentThreadID()
-        lock.unlock()
-        guard !isCallbackThread else { return false }
+        guard !isCallbackThread() else { return false }
         group.wait()
         return true
     }
@@ -240,9 +245,7 @@ final class Context {
         deviceClass = metalDeviceClass(dev)
         device = dev; queue = q
         budget = Int(ProcessInfo.processInfo.physicalMemory / 4)
-        guard let sourceURL = Bundle.module.url(forResource: "metal", withExtension: nil) else {
-            throw PMKError("Missing bundled Metal source")
-        }
+        let sourceURL = try pmkResourceURL("metal")
         let source = try String(contentsOf: sourceURL.appendingPathComponent("k3sg.metal"), encoding: .utf8)
             + "\n" + String(contentsOf: sourceURL.appendingPathComponent("noise.metal"), encoding: .utf8)
         let options = MTLCompileOptions()

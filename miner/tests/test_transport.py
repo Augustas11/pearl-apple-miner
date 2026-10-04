@@ -1,13 +1,16 @@
+# SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
 import asyncio
 import base64
 import json
+import time
 import urllib.error
 from pathlib import Path
 
 import pytest
 
+from pmk_miner.v4_admission import V4_G3_ADMISSION_ENV, V4_VENDOR_PEARL_FP8
 from pmk_miner.transport import (
     FatalCertVersionError,
     GatewayClient,
@@ -22,6 +25,19 @@ from pmk_miner.transport import (
     authorize_coinbase_job,
     redact_credentials,
 )
+
+
+def write_v4_admission(tmp_path, monkeypatch, **overrides):
+    now=time.time()
+    record={"schema":"pmk-v4-admission-v1","gpu_name":"Unit GPU","device_class":"Apple7-9",
+        "os_build":"unit-os","cache_key":"unit-cache","kernel":"E","metal_language":"3.1",
+        "library_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","vendor_pearl_fp8":V4_VENDOR_PEARL_FP8,"v4_g3_passed":True,"exact_cells":100_000_000,
+        "last_probe_unix":now-1,"valid_until_unix":now+3600}
+    record.update(overrides)
+    path=tmp_path / "v4-admission.json"
+    path.write_text(json.dumps({"devices":[record]}), encoding="utf-8")
+    monkeypatch.setenv(V4_G3_ADMISSION_ENV,str(path))
+    return path
 
 
 def header(
@@ -69,13 +85,16 @@ async def start_gateway(handler):
     return server, port
 
 
-def gateway_job_dict(job_header: bytes | None = None, cert_version: int = 3) -> dict:
+def gateway_job_dict(job_header: bytes | None = None, cert_version: int = 3, ancestor_headers=None) -> dict:
     job_header = job_header or header()
-    return {
+    data = {
         "incomplete_header_bytes": base64.b64encode(job_header).decode(),
         "target": bits_to_target(int.from_bytes(job_header[72:76], "little")),
         "cert_version": cert_version,
     }
+    if ancestor_headers is not None:
+        data["ancestor_headers"] = [base64.b64encode(item).decode() for item in ancestor_headers]
+    return data
 
 
 def tx_output(value: int, script: bytes) -> bytes:
@@ -124,7 +143,26 @@ def test_job_identity_uses_prev_bits_and_header():
 
 def test_cert_guard_is_fatal():
     with pytest.raises(FatalCertVersionError):
+        GatewayJob(header(), target=bits_to_target(0x1D00FFFF), cert_version=5)
+
+
+def test_v4_gateway_job_requires_complete_ancestor_headers(tmp_path, monkeypatch):
+    write_v4_admission(tmp_path,monkeypatch)
+    with pytest.raises(ValueError, match="ancestor_headers"):
         GatewayJob(header(), target=bits_to_target(0x1D00FFFF), cert_version=4)
+    with pytest.raises(ValueError, match="108-byte"):
+        GatewayJob(header(), target=bits_to_target(0x1D00FFFF), cert_version=4, ancestor_headers=(b"x",))
+
+
+def test_v4_gateway_job_round_trips_parent_first_ancestors(tmp_path, monkeypatch):
+    write_v4_admission(tmp_path,monkeypatch)
+    ancestors = (b"a" * 108, b"b" * 108)
+    job = GatewayJob.from_gateway_dict(gateway_job_dict(cert_version=4, ancestor_headers=ancestors))
+    assert job.cert_version == 4
+    assert job.ancestor_headers == ancestors
+    assert job.to_gateway_dict()["ancestor_headers"] == [base64.b64encode(x).decode() for x in ancestors]
+    assert job.template_identity.endswith(job.header.hex())
+    assert ":4:" in job.template_identity
 
 
 def test_job_rejects_target_mismatch_and_non_strict_cert():
@@ -935,6 +973,19 @@ def test_submission_ledger_persists_outstanding_and_deduplicates_restart(tmp_pat
     assert [entry.submission_id for entry in restarted.outstanding()] == [first.submission_id]
     restarted.finish(first.submission_id, SubmissionOutcome.ACCEPTED)
     assert SubmissionLedger(path).outstanding() == []
+
+
+def test_submission_ledger_preserves_v4_version_and_ancestors(tmp_path: Path, monkeypatch):
+    write_v4_admission(tmp_path,monkeypatch)
+    ancestors=(b"a"*108,b"b"*108)
+    job=GatewayJob(header(), bits_to_target(0x1D00FFFF), 4, ancestor_headers=ancestors)
+    path=tmp_path / "ledger.jsonl"
+    entry=SubmissionLedger(path).prepare(job,b"proof")
+    restarted=SubmissionLedger(path)
+    loaded=restarted.entries()[entry.submission_id]
+    assert loaded.cert_version == 4
+    assert loaded.ancestor_headers == ancestors
+    assert restarted.outstanding()[0].cert_version == 4
 
 
 def test_submission_ledger_rejects_conflicting_duplicate_prepared_id(tmp_path: Path):

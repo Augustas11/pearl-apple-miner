@@ -1,5 +1,8 @@
+# SPDX-License-Identifier: Apache-2.0
 import contextlib
 import ctypes as C
+import json
+import time
 from types import SimpleNamespace
 import pytest
 from pmk_miner.pipeline import (
@@ -12,8 +15,33 @@ from pmk_miner.pipeline import (
     verify_gate,
 )
 from pmk_miner.native import Slot, Result, Desc, Template, Seeds, Tile
+from pmk_miner.native import V4Desc, V4GpuJobDesc, V4OperandDesc, V4Result, V4Stats, V4TileResult
 from pmk_miner.native import NativeError
-from pmk_miner.scheme import VERIFIER_FUNCTION, V3_SCHEME, scheme_for_cert_version
+from pmk_miner.scheme import MAX_U256, VERIFIER_FUNCTION, V3_SCHEME, V4_SCHEME, scheme_for_cert_version
+from pmk_miner.v4_admission import V4_G3_ADMISSION_ENV, V4_VENDOR_PEARL_FP8
+
+
+def write_v4_admission(tmp_path, monkeypatch, **overrides):
+    now=time.time()
+    record={
+        "schema":"pmk-v4-admission-v1",
+        "gpu_name":"Unit GPU",
+        "device_class":"Apple7-9",
+        "os_build":"unit-os",
+        "cache_key":"unit-cache",
+        "kernel":"E",
+        "metal_language":"3.1",
+        "library_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","vendor_pearl_fp8":V4_VENDOR_PEARL_FP8,
+        "v4_g3_passed":True,
+        "exact_cells":100_000_000,
+        "last_probe_unix":now - 1,
+        "valid_until_unix":now + 3600,
+    }
+    record.update(overrides)
+    path=tmp_path / "v4-admission.json"
+    path.write_text(json.dumps({"devices":[record]}), encoding="utf-8")
+    monkeypatch.setenv(V4_G3_ADMISSION_ENV,str(path))
+    return path
 
 
 def test_abi_layouts():
@@ -23,6 +51,32 @@ def test_abi_layouts():
     assert C.sizeof(Tile)==112
     assert Desc.job_id.offset==192
     assert C.sizeof(Result)==72
+
+
+def test_v4_ctypes_layouts_match_headers():
+    assert C.sizeof(V4GpuJobDesc) == 384
+    assert V4GpuJobDesc.a_values.offset == 32
+    assert V4GpuJobDesc.a_noised.offset == 64
+    assert V4GpuJobDesc.a_alpha.offset == 112
+    assert V4GpuJobDesc.jackpot_key.offset == 352
+    assert C.sizeof(V4TileResult) == 116
+    assert V4TileResult.message.offset == 8
+    assert V4TileResult.is_block.offset == 112
+    assert C.sizeof(V4OperandDesc) == 72
+    assert V4OperandDesc.clean_value_count.offset == 8
+    assert V4OperandDesc.scale_count.offset == 64
+    assert C.sizeof(V4Desc) == 280
+    assert V4Desc.a.offset == 24
+    assert V4Desc.bt.offset == 96
+    assert V4Desc.jackpot_key.offset == 168
+    assert V4Desc.job_id.offset == 272
+    assert C.sizeof(V4Stats) == 80
+    assert V4Stats.layout_failures.offset == 72
+    assert C.sizeof(V4Result) == 168
+    assert V4Result.blocks.offset == 40
+    assert V4Result.stats.offset == 56
+    assert V4Result.c_bits.offset == 136
+    assert V4Result.gpu_start_time.offset == 152
 
 
 def test_lifecycle_release_waits_for_finds():
@@ -121,10 +175,11 @@ def test_gate_preserves_native_verifier_rejection_message_and_function():
         native.loop.close()
 
 
-def test_only_v3_scheme_is_supported():
+def test_only_v3_and_v4_schemes_are_supported():
     assert scheme_for_cert_version(3) is V3_SCHEME
+    assert scheme_for_cert_version(4) is V4_SCHEME
     with pytest.raises(ValueError,match='unsupported'):
-        scheme_for_cert_version(4)
+        scheme_for_cert_version(5)
 
 
 def test_v3_scheme_rejects_diagnostic_k():
@@ -150,15 +205,222 @@ def test_v3_scheme_uses_native_extract_difficulty_bound_for_compact_nbits(share_
         native.loop.close()
 
 
-def test_pipeline_template_cert_guard_routes_through_scheme():
+def test_pipeline_template_cert_guard_routes_through_scheme(monkeypatch, tmp_path):
     import asyncio
     from pmk_miner.pipeline import Pipeline
+    monkeypatch.setenv(V4_G3_ADMISSION_ENV, str(tmp_path / 'missing-admission.json'))
     native=FakeNative(asyncio.new_event_loop())
     try:
         pipeline=Pipeline(native,Shape(128,128,4096,2),lambda *a,**kw:None)
         source=SimpleNamespace(cert_version=4,template_identity='bad',header=b'',target=1)
-        with pytest.raises(ValueError,match='requires cert_version=3'):
+        with pytest.raises(ValueError,match='v4 G3 admission'):
             pipeline.set_template(source)
+    finally:
+        native.loop.close()
+
+
+def test_v4_shape_policy_uses_gpu_grid_and_supported_k_set():
+    assert V4_SCHEME.validate_config(V4_SCHEME.build_config(None,32,64,1024)).k == 1024
+    assert V4_SCHEME.validate_config(V4_SCHEME.build_config(None,32,64,4096)).k == 4096
+    assert V4_SCHEME.validate_config(V4_SCHEME.build_config(None,32,64,16384)).k == 16384
+    with pytest.raises(ValueError,match="multiples of 32"):
+        V4_SCHEME.validate_config(b"pmk-v4-grid-b200\0" + (16).to_bytes(4,"little") + (32).to_bytes(4,"little") + (4096).to_bytes(4,"little"))
+    with pytest.raises(ValueError,match="one of"):
+        V4_SCHEME.ensure_k(2048)
+    with pytest.raises(ValueError,match="<= 8192"):
+        V4_SCHEME.validate_config(V4_SCHEME.build_config(None,8224,32,4096))
+
+
+def test_v4_memory_policy_is_allocation_free_and_conservative():
+    safe = V4_SCHEME.validate_shape(Shape(8192,8192,4096,2),ram=24*1024**3)
+    assert safe < 24*1024**3 // 4
+    with pytest.raises(ValueError,match="25% RAM"):
+        V4_SCHEME.validate_shape(Shape(8192,8192,16384,2),ram=24*1024**3)
+    with pytest.raises(ValueError,match="<= 8192"):
+        V4_SCHEME.validate_shape(Shape(16384,8192,4096,2),ram=128*1024**3)
+
+
+def test_v4_bound_saturates_easy_regtest_overflow():
+    cfg=V4_SCHEME.build_config(None,32,32,4096)
+    assert V4_SCHEME.target_bound(MAX_U256,cfg) == MAX_U256
+    assert V4_SCHEME.nbits_bound(0x207fffff,cfg) == MAX_U256
+
+
+def test_v4_descriptor_uses_clean_int8_values_not_noised_buffers():
+    from pmk_miner.native import U8, U16, V4GpuJobDesc
+    a_values=(C.c_int8*4)(1,2,3,4)
+    bt_values=(C.c_int8*4)(-1,-2,-3,-4)
+    a_noised=(U8*8)(*range(8))
+    bt_noised=(U8*8)(*range(8))
+    e=(U8*4)(0,1,2,3)
+    f=(U8*4)(4,5,6,7)
+    alpha=(U16*2)(1,2)
+    beta=(U16*2)(3,4)
+    desc=V4GpuJobDesc(
+        m=2,n=2,k=2,rank=2,tile_rows=16,tile_cols=16,row_period=1,col_period=1,
+        a_values=a_values,a_scales=None,bt_values=bt_values,bt_scales=None,
+        a_noised=a_noised,bt_noised=bt_noised,
+        a_noise_e=e,a_noise_f=f,bt_noise_e=e,bt_noise_f=f,
+        a_alpha=alpha,a_beta=beta,a_l2=None,bt_alpha=alpha,bt_beta=beta,bt_l2=None,
+    )
+    job=SimpleNamespace(desc=desc)
+    v4=V4_SCHEME.job_descriptor(None,None,job,SimpleNamespace(result_capacity=4),None,None,1,1,9)
+    assert C.addressof(v4.a.clean_values.contents) == C.addressof(a_values)
+    assert C.addressof(v4.bt.clean_values.contents) == C.addressof(bt_values)
+    assert C.addressof(v4.a.clean_values.contents) != C.addressof(a_noised)
+    assert C.addressof(v4.bt.clean_values.contents) != C.addressof(bt_noised)
+    assert v4.a.clean_value_count == 4
+    assert v4.bt.clean_value_count == 4
+
+
+def test_v4_build_job_frees_core_job_when_descriptor_fails():
+    class FailingDescriptorNative:
+        def __init__(self):
+            self.freed=[]
+        def v4_create_job(self, header, ancestor_header, ancestor_chain, m, n, k):
+            assert ancestor_header == b"b"*108
+            assert ancestor_chain == b"a"*108
+            return "job-handle"
+        def v4_gpu_descriptor(self, job):
+            assert job == "job-handle"
+            raise RuntimeError("descriptor failed")
+        def v4_free_job(self, job):
+            self.freed.append(job)
+
+    native=FailingDescriptorNative()
+    template=SimpleNamespace(header=b"h"*76, ancestor_headers=(b"a"*108,b"b"*108))
+    with pytest.raises(RuntimeError,match="descriptor failed"):
+        V4_SCHEME.build_job(native,template,None,Shape(32,32,4096,2))
+    assert native.freed == ["job-handle"]
+
+
+def test_v4_admission_file_rejects_missing_malformed_false_and_low_cells(tmp_path, monkeypatch):
+    from pmk_miner.v4_admission import validate_v4_g3_admission_file
+    monkeypatch.delenv(V4_G3_ADMISSION_ENV,raising=False)
+    with pytest.raises(ValueError,match="missing v4 G3 admission"):
+        validate_v4_g3_admission_file()
+    bad=tmp_path / "bad.json"
+    bad.write_text("{", encoding="utf-8")
+    monkeypatch.setenv(V4_G3_ADMISSION_ENV,str(bad))
+    with pytest.raises(ValueError,match="malformed"):
+        validate_v4_g3_admission_file()
+    write_v4_admission(tmp_path,monkeypatch,v4_g3_passed=False)
+    with pytest.raises(ValueError,match="no passing"):
+        validate_v4_g3_admission_file()
+    write_v4_admission(tmp_path,monkeypatch,exact_cells=99_999_999)
+    with pytest.raises(ValueError,match="exact_cells"):
+        validate_v4_g3_admission_file()
+
+    write_v4_admission(tmp_path,monkeypatch,library_sha256="A" * 64)
+    with pytest.raises(ValueError,match="library_sha256"):
+        validate_v4_g3_admission_file()
+    write_v4_admission(tmp_path,monkeypatch,library_sha256="a" * 63)
+    with pytest.raises(ValueError,match="library_sha256"):
+        validate_v4_g3_admission_file()
+
+
+def test_native_v4_init_binds_admission_to_loaded_libpmk_sha(tmp_path):
+    from pmk_miner.native import Native
+
+    lib = tmp_path / "libpmk.dylib"
+    lib.write_bytes(b"unit libpmk bytes")
+    native = Native.__new__(Native)
+    native.metal_path = lib
+    good = {"library_sha256": "0cf79e209f573a294deae424d4cb668a221f0fdf97a359dab10d8a4918f2fcfb"}
+    assert native._check_v4_library_admission(good) == good["library_sha256"]
+    with pytest.raises(ValueError,match="library_sha256 mismatch"):
+        native._check_v4_library_admission({"library_sha256": "0" * 64})
+    with pytest.raises(ValueError,match="metadata required"):
+        native._check_v4_library_admission(None)
+    native.v4_core = None
+    with pytest.raises(ValueError,match="metadata required"):
+        native.ensure_v4()
+    native.v4_core = object()
+    assert native.ensure_v4() is native.v4_core
+
+
+def test_v4_template_requires_native_g3_admission_before_acceptance(tmp_path, monkeypatch):
+    import asyncio
+    import pearl_mining as pm
+    from pmk_miner.pipeline import Pipeline
+    from pmk_miner.transport import GatewayJob
+    from pmk_miner.monitor import bits_to_target
+
+    class RejectingV4Native(FakeNative):
+        def ensure_v4(self, admission=None):
+            assert admission["library_sha256"] == "a" * 64
+            self.v4_checked = True
+            raise ValueError("DO NOT MINE: missing v4 G3 admission file")
+
+    write_v4_admission(tmp_path,monkeypatch)
+    native=RejectingV4Native(asyncio.new_event_loop())
+    try:
+        pipeline=Pipeline(native,Shape(128,128,4096,2),lambda *a,**kw:None)
+        header=pm.IncompleteBlockHeader(1,bytes(32),bytes(32),1,0x177fd82e)
+        source=GatewayJob(bytes(header.to_bytes()),bits_to_target(header.nbits),4,
+                          ancestor_headers=(b"a"*108,))
+        with pytest.raises(ValueError,match="missing v4 G3 admission"):
+            pipeline.set_template(source)
+        assert native.v4_checked is True
+        assert pipeline.source is None
+    finally:
+        native.loop.close()
+
+
+@pytest.mark.parametrize('k', [1024, 4096, 16384])
+def test_v4_template_accepts_only_after_native_g3_admission_and_ancestors(tmp_path, monkeypatch, k):
+    import asyncio
+    import pearl_mining as pm
+    from pmk_miner.pipeline import Pipeline
+    from pmk_miner.transport import GatewayJob
+    from pmk_miner.monitor import bits_to_target
+
+    class AdmittedV4Native(FakeNative):
+        def ensure_v4(self, admission=None):
+            assert admission["library_sha256"] == "a" * 64
+            self.v4_checked = True
+            self.v4_core = object()
+            return self.v4_core
+
+    write_v4_admission(tmp_path,monkeypatch)
+    native=AdmittedV4Native(asyncio.new_event_loop())
+    try:
+        pipeline=Pipeline(native,Shape(128,128,k,2),lambda *a,**kw:None)
+        header=pm.IncompleteBlockHeader(1,bytes(32),bytes(32),1,0x177fd82e)
+        source=GatewayJob(bytes(header.to_bytes()),bits_to_target(header.nbits),4,
+                          ancestor_headers=(b"a"*108,))
+        pipeline.set_template(source)
+        assert native.v4_checked is True
+        assert pipeline.scheme is V4_SCHEME
+        assert pipeline.source is source
+        assert pipeline.template is source
+    finally:
+        native.loop.close()
+
+
+def test_v3_template_fails_closed_when_startup_shape_was_v4_only():
+    import asyncio
+    import pearl_mining as pm
+    from pmk_miner.pipeline import Pipeline
+    from pmk_miner.transport import GatewayJob
+    from pmk_miner.monitor import bits_to_target
+
+    class ShapeAwareNative(FakeNative):
+        def config(self, pattern_id, m, n, k):
+            V3_SCHEME.ensure_k(k)
+            return super().config(pattern_id,m,n,k)
+
+    native=ShapeAwareNative(asyncio.new_event_loop())
+    try:
+        pipeline=Pipeline(native,Shape(128,128,1024,2),lambda *a,**kw:None)
+        assert pipeline.config is None
+        header=pm.IncompleteBlockHeader(1,bytes(32),bytes(32),1,0x177fd82e)
+        source=GatewayJob(bytes(header.to_bytes()),bits_to_target(header.nbits),3)
+        with pytest.raises(ValueError,match=r"k in \[2048,8192\]"):
+            pipeline.set_template(source)
+        assert pipeline.source is None
+        assert pipeline.scheme is V3_SCHEME
+        assert pipeline.config is None
     finally:
         native.loop.close()
 
@@ -267,6 +529,118 @@ def opaque_source(header: bytes, target: int, cert_version: int = 9):
     )
 
 
+
+
+class V4StatsOpaqueScheme(OpaqueScheme):
+    cert_version = 4
+
+
+def v4_stats_result(**stats_overrides):
+    stats = SimpleNamespace(
+        fallback_groups=2,
+        total_groups=100,
+        fallback_alert=1,
+        layout_failures=3,
+        quantized_a=4,
+        quantized_b=5,
+        quant_saturated_a=6,
+        quant_saturated_b=7,
+        quant_nan_a=8,
+        quant_nan_b=9,
+    )
+    for key,value in stats_overrides.items():
+        setattr(stats,key,value)
+    return SimpleNamespace(
+        abi_version=1,
+        block_count=0,
+        share_count=0,
+        block_stored=0,
+        share_stored=0,
+        blocks=None,
+        shares=None,
+        overflow=0,
+        gpu_start_time=1.0,
+        gpu_end_time=1.01,
+        stats=stats,
+    )
+
+
+def test_v4_completed_event_records_fallback_stats_and_warning_for_small_k():
+    import asyncio
+    import pearl_mining as pm
+    from pmk_miner.pipeline import Pipeline
+    from pmk_miner.monitor import bits_to_target
+
+    async def scenario():
+        logs=[]
+        native=OpaqueNative(asyncio.get_running_loop())
+        pipeline=Pipeline(
+            native,
+            Shape(128,128,4096,2),
+            lambda event,**kw:logs.append((event,kw)),
+            scheme=V4StatsOpaqueScheme(),
+        )
+        header=pm.IncompleteBlockHeader(1,bytes(32),bytes(32),1,0x177fd82e)
+        source=opaque_source(bytes(header.to_bytes()),bits_to_target(header.nbits),cert_version=4)
+        pipeline.set_template(source)
+        native.poll=lambda handle: v4_stats_result()
+        async def submit(job,encoded): pytest.fail("empty v4 stats job must not submit")
+        await pipeline.run(0,source.target,source.bits,submit,lambda _:True)
+        warning=[kw for event,kw in logs if event == "v4_fallback_warning"]
+        assert len(warning) == 1
+        assert warning[0]["severity"] == "warning"
+        assert warning[0]["job_id"] == 1
+        assert warning[0]["k"] == 4096
+        assert warning[0]["fallback_per_job"] == 2
+        assert warning[0]["total_groups"] == 100
+        assert warning[0]["fallback_rate"] == pytest.approx(0.02)
+        completed=[kw for event,kw in logs if event == "completed"]
+        assert len(completed) == 1
+        assert completed[0]["fallback_per_job"] == 2
+        assert completed[0]["fallback_groups"] == 2
+        assert completed[0]["total_groups"] == 100
+        assert completed[0]["fallback_rate"] == pytest.approx(0.02)
+        assert completed[0]["fallback_alert"] is True
+        assert completed[0]["layout_failures"] == 3
+        assert completed[0]["quantized_a"] == 4
+        assert completed[0]["quantized_b"] == 5
+        assert completed[0]["quant_saturated_a"] == 6
+        assert completed[0]["quant_saturated_b"] == 7
+        assert completed[0]["quant_nan_a"] == 8
+        assert completed[0]["quant_nan_b"] == 9
+    asyncio.run(scenario())
+
+
+def test_v3_completed_event_ignores_result_stats_fields():
+    import asyncio
+    import pearl_mining as pm
+    from pmk_miner.pipeline import Pipeline
+    from pmk_miner.monitor import bits_to_target
+
+    async def scenario():
+        logs=[]
+        native=OpaqueNative(asyncio.get_running_loop())
+        pipeline=Pipeline(
+            native,
+            Shape(128,128,4096,2),
+            lambda event,**kw:logs.append((event,kw)),
+            scheme=OpaqueScheme(),
+        )
+        header=pm.IncompleteBlockHeader(1,bytes(32),bytes(32),1,0x177fd82e)
+        source=opaque_source(bytes(header.to_bytes()),bits_to_target(header.nbits),cert_version=9)
+        pipeline.set_template(source)
+        native.poll=lambda handle: v4_stats_result()
+        async def submit(job,encoded): pytest.fail("empty opaque stats job must not submit")
+        await pipeline.run(0,source.target,source.bits,submit,lambda _:True)
+        assert [event for event,_ in logs if event == "v4_fallback_warning"] == []
+        completed=[kw for event,kw in logs if event == "completed"]
+        assert len(completed) == 1
+        assert "fallback_rate" not in completed[0]
+        assert "fallback_per_job" not in completed[0]
+        assert "quantized_a" not in completed[0]
+    asyncio.run(scenario())
+
+
 def test_cancellation_drains_gpu_before_release():
     import asyncio
     import pearl_mining as pm
@@ -304,7 +678,7 @@ def test_cert_guard_cancellation_abandons_pending_work():
         task=asyncio.create_task(pipeline.run(0,source.target,source.bits,submit,lambda _:True))
         while not native.dispatched: await asyncio.sleep(.001)
         with pytest.raises(FatalCertVersionError):
-            try: GatewayJob(source.header,source.target,4)
+            try: GatewayJob(source.header,source.target,5)
             except FatalCertVersionError:
                 pipeline.cancel(); raise
         record=await task
@@ -809,6 +1183,48 @@ def test_pool_block_only_find_is_classified_but_not_submitted_as_share():
             "is_block": True,
             "share_nbits": source.share_nbits,
         }]
+    asyncio.run(scenario())
+
+
+def test_version_changed_old_find_is_logged_stale_not_submitted():
+    import asyncio
+    import pearl_mining as pm
+    from pmk_miner.pipeline import Pipeline
+    from pmk_miner.monitor import bits_to_target
+
+    async def scenario():
+        logs=[]
+        native=OpaqueNative(asyncio.get_running_loop())
+        pipeline=Pipeline(
+            native,
+            Shape(128,128,4096,2),
+            lambda event,**kw:logs.append((event,kw)),
+            scheme=OpaqueScheme(),
+        )
+        header=pm.IncompleteBlockHeader(1,bytes(32),bytes(32),1,0x177fd82e)
+        source=opaque_source(bytes(header.to_bytes()),bits_to_target(header.nbits))
+        pipeline.set_template(source)
+        slot=(Slot*1)()
+        native.poll=lambda handle: Result(
+            abi_version=1,
+            block_count=1,
+            block_stored=1,
+            blocks=slot,
+            gpu_start_time=1,
+            gpu_end_time=1.01,
+        )
+        submitted=[]
+        async def submit(job,encoded): submitted.append((job,encoded))
+        calls=0
+        def current(job):
+            nonlocal calls
+            calls += 1
+            return calls < 4
+        record=await pipeline.run(0,source.target,source.bits,submit,current)
+        assert not record.cancelled
+        assert submitted == []
+        stale=[kw for event,kw in logs if event=="outcome"]
+        assert stale == [{"classification": "stale", "job_id": 1}]
     asyncio.run(scenario())
 
 

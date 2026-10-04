@@ -1,0 +1,26 @@
+{
+  "m": 32,
+  "n": 64,
+  "k": 1024,
+  "seed_hex": "58845a27a50f88b2cf7675098b2904248ea30e9a7a7603eaedd29052f6b9c900",
+  "proposed_header_b64": "BAAAAPcDHeeol/TAKgpl/WcBHXDtv738c5I/yvVkRQxX6CqhyIe/4WL7ef91o9NJaV1R3FhymcEryYGCVCEPMggIdAn5zfzP//9/IA==",
+  "ancestor_header_b64": "BAAAAPfJLmJGpRcHHWGmV4pK+fsfa/9TfysEjUuPAfTd5u2UdDL0nCcW4mLo2HLm+UCor0AhewpRuHtlVmc7IPWejPX4zfzP//9/IJiQ+kRQc3sdj0M/VjIKqUZiA3DZYTykQ3TT2aUP9xot",
+  "ancestor_chain_b64": "",
+  "rank": 32,
+  "device": "B200",
+  "layout": "AxisPattern([(4,Fold),(4,Blake)]) x AxisPattern([(4,Fold),(4,Blake)])",
+  "files": [
+    "a.bin",
+    "b.bin",
+    "a_noise_e.bin",
+    "a_noise_f.bin",
+    "b_noise_e.bin",
+    "b_noise_f.bin",
+    "a_alpha.bf16",
+    "a_beta.bf16",
+    "a_l2.bf16",
+    "b_alpha.bf16",
+    "b_beta.bf16",
+    "b_l2.bf16"
+  ]
+}

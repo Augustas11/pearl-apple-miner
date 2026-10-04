@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Gateway and node transport for pmk solo mining.
 
 This module deliberately keeps the wire contracts small: the gateway speaks
@@ -24,6 +25,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from .scheme import scheme_for_cert_version
+from .v4_admission import validate_v4_g3_admission_file
 
 
 CERT_VERSION_ZK_V3 = 3
@@ -39,7 +41,7 @@ class TransportError(RuntimeError):
 
 
 class FatalCertVersionError(RuntimeError):
-    """Raised when a job requires a non-v3 certificate."""
+    """Raised when a job requires an unsupported certificate version."""
 
 
 class SubmissionOutcome(StrEnum):
@@ -106,6 +108,7 @@ class GatewayJob:
     coinbase_merkle_branch: tuple[bytes, ...] = ()
     coinbase_index: int = 0
     submission_id: str | None = None
+    ancestor_headers: tuple[bytes, ...] = ()
 
     def __post_init__(self) -> None:
         if len(self.header) != HEADER_LEN:
@@ -129,6 +132,15 @@ class GatewayJob:
             )
             if self.coinbase_index < 0:
                 raise ValueError("coinbase index must be non-negative")
+        object.__setattr__(self, "ancestor_headers", tuple(bytes(x) for x in self.ancestor_headers))
+        if self.cert_version == 4:
+            validate_v4_g3_admission_file()
+            if not self.ancestor_headers:
+                raise ValueError("v4 gateway job is missing ancestor_headers")
+            if len(self.ancestor_headers) > 4 or any(len(x) != 108 for x in self.ancestor_headers):
+                raise ValueError("v4 ancestor_headers must be 108-byte complete headers")
+        elif self.ancestor_headers:
+            raise ValueError("ancestor_headers are only valid for cert_version=4")
         if self.submission_id is not None and not re.fullmatch(r"[0-9a-f]{32}", self.submission_id):
             raise ValueError("submission_id must be 32 lowercase hex characters")
 
@@ -158,7 +170,8 @@ class GatewayJob:
 
     @property
     def template_identity(self) -> str:
-        return f"{self.prev_hash}:{self.bits_hex}:{self.header.hex()}"
+        ancestors = hashlib.blake2s(b"".join(self.ancestor_headers), digest_size=16).hexdigest() if self.ancestor_headers else ""
+        return f"{self.prev_hash}:{self.bits_hex}:{self.cert_version}:{ancestors}:{self.header.hex()}"
 
     @property
     def header_hex(self) -> str:
@@ -182,6 +195,10 @@ class GatewayJob:
             data["coinbase_index"] = self.coinbase_index
         if self.submission_id is not None:
             data["submission_id"] = self.submission_id
+        if self.ancestor_headers:
+            data["ancestor_headers"] = [
+                base64.b64encode(h).decode("ascii") for h in self.ancestor_headers
+            ]
         return data
 
     @classmethod
@@ -211,6 +228,14 @@ class GatewayJob:
                 if not _strict_int(index_raw):
                     raise ValueError("coinbase_index is not a strict integer")
                 coinbase_index = int(index_raw)
+            ancestor_headers = ()
+            if "ancestor_headers" in data:
+                raw_ancestors = data["ancestor_headers"]
+                if not isinstance(raw_ancestors, list):
+                    raise ValueError("ancestor_headers is not a list")
+                ancestor_headers = tuple(
+                    base64.b64decode(item, validate=True) for item in raw_ancestors
+                )
             submission_id = data.get("submission_id")
             if submission_id is not None and not isinstance(submission_id, str):
                 raise ValueError("submission_id is not a string")
@@ -224,6 +249,7 @@ class GatewayJob:
             coinbase_merkle_branch=coinbase_merkle_branch,
             coinbase_index=coinbase_index,
             submission_id=submission_id,
+            ancestor_headers=ancestor_headers,
         )
 
     def with_submission_id(self, submission_id: str) -> "GatewayJob":
@@ -235,6 +261,7 @@ class GatewayJob:
             coinbase_merkle_branch=self.coinbase_merkle_branch,
             coinbase_index=self.coinbase_index,
             submission_id=submission_id,
+            ancestor_headers=self.ancestor_headers,
         )
 
     def authorize_coinbase(self, *, approved_script_hex: str) -> None:
@@ -878,6 +905,8 @@ class SubmissionEntry:
     share_nbits: int | None = None
     cfg_hex: str | None = None
     session_id: str | None = None
+    cert_version: int = CERT_VERSION_ZK_V3
+    ancestor_headers: tuple[bytes, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -978,6 +1007,8 @@ class SubmissionLedger:
             share_nbits=old.share_nbits,
             cfg_hex=old.cfg_hex,
             session_id=old.session_id,
+            cert_version=old.cert_version,
+            ancestor_headers=old.ancestor_headers,
         )
         self._append({"event": "finished", "submission_id": submission_id, "outcome": parsed.value})
         self._entries[submission_id] = entry
@@ -1079,6 +1110,8 @@ class SubmissionLedger:
             share_nbits=entry.share_nbits,
             cfg_hex=entry.cfg_hex,
             session_id=entry.session_id,
+            cert_version=entry.cert_version,
+            ancestor_headers=entry.ancestor_headers,
         )
 
     def _append(self, row: dict[str, Any]) -> None:
@@ -1125,7 +1158,17 @@ def _submission_metadata(
         "share_nbits": None,
         "cfg_hex": cfg_hex,
         "session_id": session_id if session_id is not None else getattr(job, "session_id", None),
+        "cert_version": getattr(job, "cert_version", CERT_VERSION_ZK_V3),
+        "ancestor_headers": tuple(getattr(job, "ancestor_headers", ()) or ()),
     }
+    if type(metadata["cert_version"]) is not int or metadata["cert_version"] not in (3,4):
+        raise ValueError("submission ledger requires cert_version 3 or 4")
+    metadata["ancestor_headers"] = tuple(bytes(x) for x in metadata["ancestor_headers"])
+    if metadata["cert_version"] == 4:
+        if not metadata["ancestor_headers"] or any(len(x) != 108 for x in metadata["ancestor_headers"]):
+            raise ValueError("v4 ledger entry requires complete ancestor_headers")
+    elif metadata["ancestor_headers"]:
+        raise ValueError("ancestor_headers are only valid for cert_version=4")
     if metadata["session_id"] is not None:
         metadata["session_id"] = str(metadata["session_id"])
 
@@ -1170,6 +1213,9 @@ def _entry_metadata_row(entry: SubmissionEntry) -> dict[str, Any]:
         row["share_nbits"] = entry.share_nbits
     if entry.cfg_hex is not None:
         row["cfg_hex"] = entry.cfg_hex
+    row["cert_version"] = entry.cert_version
+    if entry.ancestor_headers:
+        row["ancestor_headers"] = [base64.b64encode(h).decode("ascii") for h in entry.ancestor_headers]
     if entry.session_id is not None:
         row["session_id"] = entry.session_id
     return row
@@ -1178,6 +1224,7 @@ def _entry_metadata_row(entry: SubmissionEntry) -> dict[str, Any]:
 def _valid_template_identity(template_identity: str) -> bool:
     return bool(
         re.fullmatch(r"[0-9a-f]+:[0-9a-f]{8}:[0-9a-f]{152}", template_identity)
+        or re.fullmatch(r"[0-9a-f]+:[0-9a-f]{8}:(3|4):([0-9a-f]{32})?:[0-9a-f]{152}", template_identity)
         or re.fullmatch(r"[0-9a-f]{152}", template_identity)
     )
 
@@ -1194,6 +1241,8 @@ def _load_entry_metadata(row: dict[str, Any], source: str) -> dict[str, Any]:
     share_nbits = row.get("share_nbits")
     cfg_hex = row.get("cfg_hex")
     session_id = row.get("session_id")
+    cert_version = row.get("cert_version", CERT_VERSION_ZK_V3)
+    ancestor_headers_raw = row.get("ancestor_headers", [])
     if pool_job_id is not None and (
         not isinstance(pool_job_id, str)
         or len(pool_job_id) > 64
@@ -1210,6 +1259,19 @@ def _load_entry_metadata(row: dict[str, Any], source: str) -> dict[str, Any]:
         raise ValueError("invalid cfg_hex")
     if session_id is not None and not isinstance(session_id, str):
         raise ValueError("invalid session_id")
+    if type(cert_version) is not int or cert_version not in (3,4):
+        raise ValueError("invalid cert_version")
+    if not isinstance(ancestor_headers_raw, list):
+        raise ValueError("invalid ancestor_headers")
+    try:
+        ancestor_headers = tuple(base64.b64decode(item, validate=True) for item in ancestor_headers_raw)
+    except (TypeError, ValueError):
+        raise ValueError("invalid ancestor_headers") from None
+    if cert_version == 4:
+        if not ancestor_headers or any(len(item) != 108 for item in ancestor_headers):
+            raise ValueError("invalid ancestor_headers")
+    elif ancestor_headers:
+        raise ValueError("invalid ancestor_headers")
     if source == "pool" and (
         pool_job_id is None
         or target is None
@@ -1225,6 +1287,8 @@ def _load_entry_metadata(row: dict[str, Any], source: str) -> dict[str, Any]:
         "share_nbits": share_nbits,
         "cfg_hex": cfg_hex,
         "session_id": session_id,
+        "cert_version": cert_version,
+        "ancestor_headers": ancestor_headers,
     }
 
 

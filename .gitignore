@@ -31,6 +31,7 @@ bench/k3sg/studio/k3sg
 bench/k3sg/studio/k3sg.local
 bench/k3sg/studio/vectors/
 bench/v4_emulation/metal/v4emu
+bench/v4_emulation/pearl-build/
 # raw evidence logs are not published; only the summaries below are kept
 bench/evidence/*
 !bench/evidence/studio_b4_m3ultra_summary.json

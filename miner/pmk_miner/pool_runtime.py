@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Pool orchestration: immutable work, local verification and durable outcomes."""
 from __future__ import annotations
 
@@ -109,7 +110,9 @@ async def mine_pool(args, config, log, memory_limits, *, admission_refresh=None,
 
     def current(job):
         return (not stop.is_set() and not (pipeline and pipeline.stopped)
-                and client.latest is not None and job.session_id == client.session_id)
+                and client.latest is not None and job.session_id == client.session_id
+                and client.latest.template_identity == job.template_identity
+                and client.latest.cert_version == job.cert_version)
 
     def checkpoint():
         state.save_if_due(float(run.get('checkpoint_seconds', 5)),

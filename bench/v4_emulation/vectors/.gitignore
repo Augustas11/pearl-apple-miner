@@ -1,2 +1,5 @@
 *
 !.gitignore
+!b9_integration/
+!b9_integration/32x64_k1024_s1/
+!b9_integration/32x64_k1024_s1/metadata.json

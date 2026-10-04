@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Quick-start boundaries without GPU or network access."""
 import importlib.util
 from pathlib import Path
@@ -101,6 +102,7 @@ def test_mining_wrapper_passes_desktop_and_watchdog_flags(monkeypatch, tmp_path)
     from pmk_miner import __main__ as miner
     from pmk_miner import pool
     calls = []
+    monkeypatch.delenv('PMK_V4_G3_ADMISSION_FILE', raising=False)
     monkeypatch.setenv('PMK_HOME', str(tmp_path / 'state'))
     monkeypatch.setattr(quickstart, 'worker_name', lambda: 'test-mac')
     monkeypatch.setattr(quickstart, 'gpu_core_count', lambda: 8)
@@ -119,3 +121,8 @@ def test_mining_wrapper_passes_desktop_and_watchdog_flags(monkeypatch, tmp_path)
     assert forwarded[forwarded.index('--pool-silence-timeout') + 1] == '90.0'
     assert forwarded[forwarded.index('--on-battery') + 1] == 'run'
     assert forwarded[forwarded.index('--intensity') + 1] == '60'
+    state = tmp_path / 'state'
+    v4_admission = state / 'v4-g3-admission.json'
+    config = (state / 'pool.toml').read_text()
+    assert f'[v4]\nadmission_file = "{v4_admission}"' in config
+    assert 'PMK_V4_G3_ADMISSION_FILE' not in quickstart.os.environ

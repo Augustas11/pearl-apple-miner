@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
 """Beta CLI: private wallet files, admission, and existing pool telemetry."""
 from __future__ import annotations
 
@@ -120,10 +121,12 @@ def main():
     state.chmod(0o700)
     write_private(state / 'wallet', args.wallet + '\n')
     write_private(state / 'wallet-allowlist', args.wallet + '\n')
+    v4_admission = state / 'v4-g3-admission.json'
     config = state / 'pool.toml'
     write_private(config, f'm = {shape.m}\nn = {shape.n}\nk = {shape.k}\nslots = {shape.slots}\n'
                   '[run]\nstate_dir = ' + json.dumps(str(state / 'pool')) +
-                  '\ntelemetry_interval_seconds = 5\n')
+                  '\ntelemetry_interval_seconds = 5\n'
+                  '[v4]\nadmission_file = ' + json.dumps(str(v4_admission)) + '\n')
     os.environ['PMK_G3_ADMISSION_FILE'] = str(state / 'g3-admission.json')
     from pmk_quickstart import ensure_admission
     from pmk_miner import __main__ as miner

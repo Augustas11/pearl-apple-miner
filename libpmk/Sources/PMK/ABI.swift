@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 import Foundation
 import Metal
 import CPMK
@@ -21,6 +22,14 @@ private func initContext(_ out: UnsafeMutablePointer<UnsafeMutableRawPointer?>?,
     do {
         let c = try Context(requireAdmission: requireAdmission); out.pointee = Unmanaged.passRetained(c).toOpaque()
         putString("", errorBuffer, capacity); return 0
+    } catch let resourceError as PMKResourceError {
+        putString("DO NOT MINE: \(resourceError)", errorBuffer, capacity); return Int32(PMK_RESOURCE)
+    } catch let probeError as PMKProbeError {
+        putString("DO NOT MINE: \(probeError)", errorBuffer, capacity)
+        if case .resource = probeError {
+            return Int32(PMK_RESOURCE)
+        }
+        return Int32(PMK_PROBE_FAILED)
     } catch let initError {
         putString("DO NOT MINE: \(initError)", errorBuffer, capacity); return Int32(PMK_PROBE_FAILED)
     }

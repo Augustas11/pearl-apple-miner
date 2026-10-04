@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
 # Build and certify the Pearl Metal miner on an Apple Silicon Mac.
 set -euo pipefail
 
@@ -6,6 +7,9 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 VENV="$ROOT/.venv"
 PYTHON="$VENV/bin/python"
 QUICKSTART="$ROOT/dist/quickstart"
+PMK_STATE="${PMK_HOME:-$HOME/.pmk}"
+V4_VECTORS="$PMK_STATE/v4-g3-vectors"
+V4_ADMISSION="$PMK_STATE/v4-g3-admission.json"
 
 fail() {
   echo "install: $*" >&2
@@ -44,10 +48,13 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 
 echo "==> Fetching pinned Pearl sources"
-"$ROOT/scripts/fetch_vendor.sh"
+"$ROOT/scripts/fetch_vendor.sh" --fp8
 
 echo "==> Building pmkcore (release)"
 (cd "$ROOT/pmkcore" && cargo build --release --locked)
+
+echo "==> Building pmkcore v4 (release)"
+(cd "$ROOT/pmkcore/v4" && cargo build --release --locked)
 
 echo "==> Building libpmk (release)"
 (cd "$ROOT/libpmk" && swift build -c release)
@@ -121,6 +128,28 @@ rsync -a --delete "$VECTORS/" "$QUICKSTART/vectors/g3/"
 echo "==> Running the full G3 correctness admission"
 PYTHONPATH="$ROOT/miner${PYTHONPATH:+:$PYTHONPATH}" \
   "$PYTHON" "$ROOT/scripts/pmk_quickstart.py" admission --force
+
+echo "==> Running the G3-v4 correctness admission"
+mkdir -p "$PMK_STATE"
+chmod 700 "$PMK_STATE"
+rm -f "$V4_ADMISSION"
+V4_ADMITTED=0
+if "$PYTHON" "$ROOT/scripts/pmk_v4_make_g3_vectors.py" \
+    --output "$V4_VECTORS"; then
+  if "$PYTHON" "$ROOT/scripts/pmk_v4_g3.py" \
+      "$V4_VECTORS/manifest.json" \
+      --library "$ROOT/libpmk/.build/release/libpmk.dylib" \
+      --admission "$V4_ADMISSION"; then
+    V4_ADMITTED=1
+  fi
+fi
+if [ "$V4_ADMITTED" -eq 1 ]; then
+  chmod 600 "$V4_ADMISSION"
+  echo "G3-v4 admission passed: $V4_ADMISSION"
+else
+  rm -f "$V4_ADMISSION"
+  echo "NOTE: v4 not admitted on this Mac; cert-v3 mining remains available." >&2
+fi
 
 echo
 echo "Install complete. Start mining with:"

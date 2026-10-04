@@ -1,0 +1,772 @@
+# SPDX-License-Identifier: Apache-2.0
+# Derives from Pearl fp8-scheme (ISC), pinned at f696760b259500ecb608469ea3953aeabbe78948.
+
+diff -ruN a/src/pearl_gateway/comm/dataclasses.py b/src/pearl_gateway/comm/dataclasses.py
+--- a/src/pearl_gateway/comm/dataclasses.py	2026-10-03 16:33:36
++++ b/src/pearl_gateway/comm/dataclasses.py	2026-10-03 18:47:30
+@@ -8,6 +8,7 @@
+     bits_to_target,
+     calculate_merkle_root,
+     create_coinbase_transaction,
++    double_sha256,
+ )
+ from pearl_gateway.blockchain_utils.pearl_header import PearlHeader
+ from pearl_gateway.blockchain_utils.zk_certificate import CertificateVersion
+@@ -39,6 +40,32 @@
+     return base64.b64decode(data.encode("ascii"))
+ 
+ 
++def merkle_branch_for_index(txids: list[str], index: int) -> list[bytes]:
++    """Return internal-byte-order sibling hashes for a transaction Merkle branch."""
++    if not txids:
++        raise ValueError("cannot build Merkle branch for an empty transaction list")
++    if index < 0 or index >= len(txids):
++        raise ValueError("Merkle branch index out of range")
++
++    level = [bytes.fromhex(txid)[::-1] for txid in txids]
++    branch: list[bytes] = []
++    cursor = index
++    while len(level) > 1:
++        sibling = cursor ^ 1
++        if sibling >= len(level):
++            sibling = cursor
++        branch.append(level[sibling])
++
++        next_level = []
++        for i in range(0, len(level), 2):
++            left = level[i]
++            right = level[i + 1] if i + 1 < len(level) else left
++            next_level.append(double_sha256(left + right))
++        level = next_level
++        cursor //= 2
++    return branch
++
++
+ def decode_dtype(encoded_dtype: str) -> torch.dtype:
+     # dtype is serialized as "torch.dtype"
+     return getattr(torch, encoded_dtype.replace("torch.", ""))
+@@ -52,6 +79,7 @@
+     height: int
+     raw_transactions: list[bytes]
+     coinbase_tx: Transaction
++    coinbase_merkle_branch: list[bytes]
+     # Certificate version this block must carry under the crossover cutover.
+     required_cert_version: CertificateVersion
+     # Full 108-byte wire headers of the most recent ancestors, parent first:
+@@ -79,6 +107,7 @@
+ 
+         coinbase_txid = coinbase_tx.get_txid()
+         merkle_root = calculate_merkle_root([coinbase_txid] + txids)
++        coinbase_merkle_branch = merkle_branch_for_index([coinbase_txid] + txids, 0)
+         height = data.height
+ 
+         bits_translation = bits_to_target(int(bits, 16))
+@@ -102,6 +131,7 @@
+             height=height,
+             raw_transactions=raw_transactions,
+             coinbase_tx=coinbase_tx,
++            coinbase_merkle_branch=coinbase_merkle_branch,
+             required_cert_version=CertificateVersion(data.requiredcertversion),
+             ancestor_headers=ancestor_headers,
+         )
+@@ -195,6 +225,11 @@
+     # Full 108-byte wire headers of the most recent ancestors, parent first
+     # (see BlockTemplate.ancestor_headers). Empty unless cert_version is V4.
+     ancestor_headers: list[bytes] = field(default_factory=list)
++    # Serialized coinbase and Merkle data for miner-side payout authorization.
++    coinbase_tx: bytes = b""
++    coinbase_merkle_branch: list[bytes] | None = None
++    coinbase_merkle_index: int = 0
++    submission_id: str | None = None
+ 
+     def to_dict(self) -> dict[str, Any]:
+         """Convert to dictionary for JSON-RPC response."""
+@@ -203,6 +238,12 @@
+             "target": self.target,
+             "cert_version": int(self.cert_version),
+             "ancestor_headers": [b64_encode(header) for header in self.ancestor_headers],
++            "coinbase_tx": b64_encode(self.coinbase_tx),
++            "coinbase_merkle_branch": [
++                b64_encode(node) for node in self.coinbase_merkle_branch or []
++            ],
++            "coinbase_merkle_index": self.coinbase_merkle_index,
++            **({"submission_id": self.submission_id} if self.submission_id else {}),
+         }
+ 
+     @classmethod
+@@ -214,6 +255,12 @@
+             target=data["target"],
+             cert_version=CertificateVersion(data["cert_version"]),
+             ancestor_headers=[b64_decode(header) for header in data.get("ancestor_headers", [])],
++            coinbase_tx=b64_decode(data["coinbase_tx"]) if data.get("coinbase_tx") else b"",
++            coinbase_merkle_branch=[
++                b64_decode(node) for node in data.get("coinbase_merkle_branch", [])
++            ],
++            coinbase_merkle_index=int(data.get("coinbase_merkle_index", 0)),
++            submission_id=data.get("submission_id"),
+         )
+ 
+     @classmethod
+@@ -224,6 +271,9 @@
+             target=template.target,
+             cert_version=template.required_cert_version,
+             ancestor_headers=list(template.ancestor_headers),
++            coinbase_tx=template.coinbase_tx.to_bytes(template.coinbase_tx.has_segwit),
++            coinbase_merkle_branch=template.coinbase_merkle_branch,
++            coinbase_merkle_index=0,
+         )
+ 
+     @property
+diff -ruN a/src/pearl_gateway/config.py b/src/pearl_gateway/config.py
+--- a/src/pearl_gateway/config.py	2026-10-02 11:26:31
++++ b/src/pearl_gateway/config.py	2026-10-03 18:47:30
+@@ -1,3 +1,4 @@
++from pathlib import Path
+ from typing import Literal
+ 
+ from pydantic import BaseModel
+@@ -43,10 +44,18 @@
+ 
+     def model_post_init(self, __context) -> None:
+         """Validate configuration after initialization."""
+-        if self.transport == "tcp" and not self.port:
+-            raise ValueError("TCP transport requires port to be specified")
+-        elif self.transport == "uds" and not self.socket_path:
+-            raise ValueError("UDS transport requires socket_path")
++        loopback_hosts = {"localhost", "127.0.0.1", "::1"}
++        if self.transport == "tcp":
++            if not self.port:
++                raise ValueError("TCP transport requires port to be specified")
++            if self.host not in loopback_hosts:
++                raise ValueError("Miner RPC TCP host must be loopback only")
++        elif self.transport == "uds":
++            if not self.socket_path:
++                raise ValueError("UDS transport requires socket_path")
++            socket_path = Path(self.socket_path)
++            if socket_path.is_symlink():
++                raise ValueError("UDS socket path must not be a symlink")
+ 
+ 
+ class PearlGatewayConfig(BaseModel):
+diff -ruN a/src/pearl_gateway/miner_rpc/server.py b/src/pearl_gateway/miner_rpc/server.py
+--- a/src/pearl_gateway/miner_rpc/server.py	2026-10-02 11:26:31
++++ b/src/pearl_gateway/miner_rpc/server.py	2026-10-03 18:47:30
+@@ -1,8 +1,13 @@
+ import asyncio
++import base64
+ import contextlib
++import hashlib
+ import json
+ import os
++import stat
++from contextlib import suppress
+ from dataclasses import dataclass
++from pathlib import Path
+ from typing import Any
+ 
+ import fastjsonschema
+@@ -25,6 +30,56 @@
+ READER_BUFFER_LIMIT = 4 * 2**20
+ 
+ 
++def _header_identity(header_bytes: bytes) -> dict[str, Any]:
++    return {
++        "header_hash": hashlib.blake2s(header_bytes, digest_size=16).hexdigest(),
++        "header_prefix": header_bytes[:8].hex(),
++        "header_bytes_len": len(header_bytes),
++    }
++
++
++def _gateway_event(event: str, **fields: Any) -> str:
++    payload = {"event": event, **fields}
++    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
++
++
++def _validate_submission_id(submission_id: str | None) -> str:
++    if not isinstance(submission_id, str) or len(submission_id) != 32:
++        raise ValueError("mining_job.submission_id must be a 32-byte lowercase hex string")
++    if any(char not in "0123456789abcdef" for char in submission_id):
++        raise ValueError("mining_job.submission_id must be a 32-byte lowercase hex string")
++    return submission_id
++
++
++def _submission_identity(
++    header_bytes: bytes, plain_proof_bytes: bytes, requested_submission_id: str | None
++) -> dict[str, Any]:
++    proof_hash = hashlib.blake2s(plain_proof_bytes, digest_size=32).hexdigest()
++    identity = _header_identity(header_bytes)
++    identity["proof_hash"] = proof_hash
++    identity["submission_id"] = _validate_submission_id(requested_submission_id)
++    return identity
++
++
++def _assert_protected_uds_path(socket_path: str) -> None:
++    path = Path(socket_path)
++    if path.is_symlink():
++        raise ValueError("Refusing symlink UDS socket path")
++    if path.exists() and not stat.S_ISSOCK(path.stat().st_mode):
++        raise ValueError("Refusing to replace non-socket UDS path")
++    parent = path.parent
++    parent_mode = parent.stat().st_mode
++    if parent_mode & stat.S_IWOTH and not parent_mode & stat.S_ISVTX:
++        raise ValueError("UDS socket parent must not be world-writable without sticky bit")
++
++
++def _assert_loopback_host(host: str | None) -> str:
++    host = host or "127.0.0.1"
++    if host not in {"localhost", "127.0.0.1", "::1"}:
++        raise ValueError("Miner RPC TCP host must be loopback only")
++    return host
++
++
+ @dataclass
+ class ClientInfo:
+     """Information tracked for each connected miner client."""
+@@ -57,6 +112,13 @@
+         self.server: asyncio.Server | None = None
+         self.clients: dict[int, ClientInfo] = {}
+         self._next_client_id = 0
++        queue_size = int(os.environ.get("PMK_GATEWAY_PROVING_QUEUE_SIZE", "2"))
++        if queue_size < 1:
++            raise ValueError("PMK_GATEWAY_PROVING_QUEUE_SIZE must be >= 1")
++        self._proving_slots = asyncio.BoundedSemaphore(queue_size)
++        self._proving_queue_size = queue_size
++        self._proving_tasks: set[asyncio.Task] = set()
++        logger.info(_gateway_event("proving_queue_configured", queue_size=queue_size))
+ 
+     def _allocate_client_id(self) -> int:
+         """Allocate a unique client ID."""
+@@ -86,6 +148,7 @@
+ 
+     async def _start_uds(self):
+         """Start the server on a Unix Domain Socket."""
++        _assert_protected_uds_path(self.config.socket_path)
+         # Ensure the socket file doesn't already exist
+         if os.path.exists(self.config.socket_path):
+             os.unlink(self.config.socket_path)
+@@ -102,11 +165,12 @@
+ 
+     async def _start_tcp(self):
+         """Start the server on a TCP port."""
++        host = _assert_loopback_host(self.config.host)
+         self.server = await asyncio.start_server(
+-            self._handle_client, "127.0.0.1", self.config.port, limit=READER_BUFFER_LIMIT
++            self._handle_client, host, self.config.port, limit=READER_BUFFER_LIMIT
+         )
+ 
+-        logger.info(f"Miner RPC server listening on TCP: 127.0.0.1:{self.config.port}")
++        logger.info(f"Miner RPC server listening on TCP: {host}:{self.config.port}")
+ 
+     async def stop(self):
+         """Stop the RPC server."""
+@@ -124,6 +188,15 @@
+             await self.server.wait_closed()
+             self.server = None
+ 
++        for task in list(self._proving_tasks):
++            task.cancel()
++        with suppress(asyncio.CancelledError):
++            await asyncio.gather(*self._proving_tasks, return_exceptions=True)
++
++        close_submission_service = getattr(self.submission_service, "close", None)
++        if close_submission_service is not None:
++            close_submission_service()
++
+         # Clean up UDS file if applicable
+         if self.config.transport == "uds" and os.path.exists(self.config.socket_path):
+             os.unlink(self.config.socket_path)
+@@ -157,14 +230,14 @@
+                 except asyncio.CancelledError:
+                     break
+                 except Exception as e:
+-                    logger.exception(f"Error processing request from {client_id}: {e}")
+-                    response = self._jsonrpc_error(-32000, str(e), request_id=None)
++                    logger.error(_gateway_event("client_request_error", client_id=client_id, error_type=type(e).__name__))
++                    response = self._jsonrpc_error(-32000, "Internal server error", request_id=None)
+                     response_line = json.dumps(response) + "\n"
+                     writer.write(response_line.encode())
+                     await writer.drain()
+ 
+         except Exception as e:
+-            logger.exception(f"Client handler error for {client_id}: {e}")
++            logger.error(_gateway_event("client_handler_error", client_id=client_id, error_type=type(e).__name__))
+         finally:
+             # Clean up client - single point of removal
+             self.clients.pop(client_id, None)
+@@ -185,6 +258,18 @@
+             return self._jsonrpc_error(-32602, "Invalid params", request_id, data=str(e))
+         return None
+ 
++    async def _try_admit_proving_job(self) -> bool:
++        # asyncio.Semaphore has no non-blocking acquire. In this single event loop,
++        # locked() followed by acquire() admits bounded work without queueing callers.
++        if self._proving_slots.locked():
++            return False
++        await self._proving_slots.acquire()
++        return True
++
++    def _track_proving_task(self, task: asyncio.Task) -> None:
++        self._proving_tasks.add(task)
++        task.add_done_callback(self._proving_tasks.discard)
++
+     async def _process_request(self, request_line: str, client: ClientInfo) -> dict[str, Any]:
+         """Process a single JSON-RPC request with validation."""
+         request_id = None
+@@ -203,7 +288,7 @@
+             request_id = body["id"]
+ 
+             logger.debug(f"Processing request: {method}")
+-            logger.trace(f"request params: {params}")
++            logger.trace(_gateway_event("request_received", method=method, request_id=request_id))
+ 
+             if method == "getMiningInfo":
+                 if error := self._validate_params(validate_get_mining_info, params, request_id):
+@@ -214,17 +299,73 @@
+             elif method == "submitPlainProof":
+                 if error := self._validate_params(validate_submit_plain_proof, params, request_id):
+                     return error
+-                mining_job = MiningJob.from_dict(params["mining_job"])
+-                # Certificate v4 (plain FP8) proofs ride their own wire type; the
+-                # Int7 ZK certificate versions keep the legacy ``PlainProof``.
+-                proof_type = (
+-                    PlainProofV4
+-                    if int(mining_job.cert_version) == CERT_VERSION_PLAIN_FP8
+-                    else PlainProof
++                mining_job_data = params["mining_job"]
++                plain_proof_base64 = params["plain_proof"]
++                try:
++                    claimed_submission_id = _validate_submission_id(
++                        mining_job_data.get("submission_id")
++                    )
++                except ValueError as e:
++                    return self._jsonrpc_error(-32602, str(e), request_id)
++                claimed_identity = {"submission_id": claimed_submission_id}
++                if not await self._try_admit_proving_job():
++                    logger.warning(
++                        _gateway_event(
++                            "proving_queue_full",
++                            request_id=request_id,
++                            client_id=client.client_id,
++                            queue_size=self._proving_queue_size,
++                            classification="transport",
++                            **claimed_identity,
++                        )
++                    )
++                    return self._jsonrpc_error(-32010, "proving queue full", request_id)
++                try:
++                    mining_job = MiningJob.from_dict(mining_job_data)
++                    plain_proof_bytes = base64.b64decode(
++                        plain_proof_base64.encode("ascii"), validate=True
++                    )
++                    identity = _submission_identity(
++                        mining_job.incomplete_header_bytes,
++                        plain_proof_bytes,
++                        claimed_submission_id,
++                    )
++                    # Certificate v4 (plain FP8) proofs ride their own wire type; the
++                    # Int7 ZK certificate versions keep the legacy ``PlainProof``.
++                    proof_type = (
++                        PlainProofV4
++                        if int(mining_job.cert_version) == CERT_VERSION_PLAIN_FP8
++                        else PlainProof
++                    )
++                    plain_proof = proof_type.from_base64(plain_proof_base64)
++                except Exception as e:
++                    self._proving_slots.release()
++                    logger.warning(
++                        _gateway_event(
++                            "plain_proof_decode_error",
++                            request_id=request_id,
++                            client_id=client.client_id,
++                            classification="proving-error",
++                            error_type=type(e).__name__,
++                            **claimed_identity,
++                        )
++                    )
++                    return self._jsonrpc_error(-32602, "Invalid plain_proof", request_id)
++                logger.info(
++                    _gateway_event(
++                        "submit_plain_proof_admitted",
++                        request_id=request_id,
++                        client_id=client.client_id,
++                        **identity,
++                    )
+                 )
+-                plain_proof = proof_type.from_base64(params["plain_proof"])
+-                asyncio.create_task(self.handle_submit_plain_proof(plain_proof, mining_job))
+-                return self._jsonrpc_success("submitted", request_id)
++                task = asyncio.create_task(
++                    self.handle_submit_plain_proof(plain_proof, mining_job, identity)
++                )
++                self._track_proving_task(task)
++                return self._jsonrpc_success(
++                    {"status": "submitted", "submission_id": identity["submission_id"]}, request_id
++                )
+ 
+             else:
+                 return self._jsonrpc_error(-32601, f"Method {method} not found", request_id)
+@@ -238,29 +379,38 @@
+             return self._jsonrpc_error(-32700, "Parse error", request_id=None, data=str(e))
+ 
+         except Exception as e:
+-            logger.exception(f"Error handling RPC request: {e}")
+-            return self._jsonrpc_error(-32000, str(e), request_id)
++            logger.error(
++                _gateway_event("rpc_request_error", request_id=request_id, error_type=type(e).__name__)
++            )
++            return self._jsonrpc_error(-32000, "Internal server error", request_id)
+ 
+     async def handle_submit_plain_proof(
+-        self, plain_proof: PlainProof | PlainProofV4, mining_job: MiningJob
++        self,
++        plain_proof: PlainProof | PlainProofV4,
++        mining_job: MiningJob,
++        identity: dict[str, Any] | None = None,
+     ) -> None:
+         """Handle submitPlainProof requests."""
+-        # Get the current template (needed to build the full block)
+-        if self.work_cache.current_template is None:
+-            raise MiningPausedError("no block template available")
++        identity = identity or _header_identity(mining_job.incomplete_header_bytes)
++        try:
++            # Get the current template (needed to build the full block)
++            if self.work_cache.current_template is None:
++                raise MiningPausedError("no block template available")
+ 
+-        logger.trace(f"Submitting plain proof for {mining_job.to_dict()=} and {plain_proof=}")
++            logger.trace(_gateway_event("plain_proof_processing", **identity))
+ 
+-        current_header_bytes = (
+-            self.work_cache.current_template.header.serialize_without_proof_commitment()
+-        )
+-        if mining_job.incomplete_header_bytes != current_header_bytes:
+-            logger.warning("Submitted block with old header. Skipping submission.")
+-            return
++            current_header_bytes = (
++                self.work_cache.current_template.header.serialize_without_proof_commitment()
++            )
++            if mining_job.incomplete_header_bytes != current_header_bytes:
++                logger.warning(_gateway_event("stale_plain_proof", classification="stale", **identity))
++                return
+ 
+-        # Submit the block via the submission service
+-        result = await self.submission_service.submit_plain_proof(
+-            plain_proof, self.work_cache.current_template
+-        )
++            # Submit the block via the submission service
++            result = await self.submission_service.submit_plain_proof(
++                plain_proof, self.work_cache.current_template, identity
++            )
+ 
+-        logger.info(f"Block submission result: {result}")
++            logger.info(_gateway_event("block_submission_result", result=result, **identity))
++        finally:
++            self._proving_slots.release()
+diff -ruN a/src/pearl_gateway/pearl_client.py b/src/pearl_gateway/pearl_client.py
+--- a/src/pearl_gateway/pearl_client.py	2026-10-02 11:26:31
++++ b/src/pearl_gateway/pearl_client.py	2026-10-03 18:47:30
+@@ -1,5 +1,7 @@
+ import asyncio
++import base64
+ from typing import Any
++from urllib.parse import urlsplit, urlunsplit
+ 
+ import aiohttp
+ from miner_utils import get_logger
+@@ -11,6 +13,34 @@
+ logger = get_logger(__name__)
+ 
+ 
++class PearlRpcError(ValueError):
++    """Sanitized Pearl RPC error envelope."""
++
++
++def _redact_value(value: str | None) -> str:
++    if not value:
++        return "<empty>"
++    return "<redacted>"
++
++
++def _redact_url(url: str) -> str:
++    parts = urlsplit(url)
++    if "@" not in parts.netloc:
++        return url
++    host = parts.hostname or ""
++    if parts.port is not None:
++        host = f"{host}:{parts.port}"
++    return urlunsplit((parts.scheme, host, parts.path, parts.query, parts.fragment))
++
++
++def _redact_text(text: Any, *secrets: str | None) -> str:
++    redacted = str(text)
++    for secret in secrets:
++        if secret:
++            redacted = redacted.replace(secret, _redact_value(secret))
++    return redacted
++
++
+ class PearlNodeClient:
+     """Client for interacting with Pearl Core's JSON-RPC API over HTTPS."""
+ 
+@@ -18,22 +48,26 @@
+         url = config.rpc_url
+ 
+         self.rpc_url = url
+-        self.auth = aiohttp.BasicAuth(config.rpc_user, config.rpc_password)
++        self._rpc_user = config.rpc_user
++        self._rpc_password = config.rpc_password
++        auth_bytes = f"{config.rpc_user}:{config.rpc_password}".encode("utf-8")
++        self._auth_token = base64.b64encode(auth_bytes).decode("ascii")
++        self._auth_headers = {"Authorization": f"Basic {self._auth_token}"}
+         self.mining_address = config.mining_address
+         self.session = None
+         self.request_id = 0
+         self.backoff_time = 1  # Initial backoff time in seconds
+         self.max_backoff = 60  # Maximum backoff time in seconds
+ 
+-        logger.info(f"Using mining address: {self.mining_address}")
++        logger.info(f"Using mining address: {_redact_value(self.mining_address)}")
+ 
+         logger.info(
+-            f"PearlNodeClient initialized with rpc_url: {self.rpc_url}, rpc_user: {config.rpc_user}, rpc_password: {config.rpc_password}"
++            f"PearlNodeClient initialized with rpc_url: {_redact_url(self.rpc_url)}, rpc_user: {_redact_value(config.rpc_user)}, rpc_password: {_redact_value(config.rpc_password)}"
+         )
+ 
+     def _create_session(self) -> aiohttp.ClientSession:
+         """Create an HTTP session."""
+-        return aiohttp.ClientSession(auth=self.auth)
++        return aiohttp.ClientSession(headers=self._auth_headers)
+ 
+     async def __aenter__(self):
+         self.session = self._create_session()
+@@ -44,14 +78,21 @@
+             await self.session.close()
+             self.session = None
+ 
++    def _redact_exception(self, exc: BaseException) -> str:
++        return _redact_text(
++            exc,
++            self._rpc_user,
++            self._rpc_password,
++            self.rpc_url,
++            self._auth_token,
++            self._auth_headers.get("Authorization"),
++        )
++
+     async def _make_rpc_call(self, method: str, params: list = None) -> dict[str, Any]:
+         """Make a JSON-RPC call to the Pearl node."""
+-        if not self.session:
+-            self.session = self._create_session()
++        logger.debug(f"Making RPC call to {_redact_url(self.rpc_url)} with method {method}")
++        logger.trace(f"RPC params redacted for method {method}")
+ 
+-        logger.debug(f"Making RPC call to {self.rpc_url} with method {method}")
+-        logger.trace(f"{params=}")
+-
+         if params is None:
+             params = []
+ 
+@@ -64,26 +105,36 @@
+         }
+ 
+         try:
++            if not self.session:
++                self.session = self._create_session()
+             async with self.session.post(self.rpc_url, json=payload) as response:
+                 if response.status != 200:
+                     logger.error(f"Error communicating with Pearl node: HTTP {response.status}")
+-                    await asyncio.sleep(self.backoff_time)
+-                    self.backoff_time = min(self.backoff_time * 2, self.max_backoff)
+                     raise ConnectionError(f"Pearl node returned HTTP {response.status}")
+ 
+                 data = await response.json()
+                 self.backoff_time = 1  # Reset backoff on successful call
+ 
+                 if "error" in data and data["error"] is not None:
+-                    logger.error(f"Pearl RPC error: {data['error']}")
+-                    raise ValueError(f"Pearl RPC error: {data['error']}")
++                    safe_error = _redact_text(
++                        data["error"], self._rpc_user, self._rpc_password, self._auth_token
++                    )
++                    logger.error(f"Pearl RPC error: {safe_error}")
++                    raise PearlRpcError(f"Pearl RPC error: {safe_error}") from None
+ 
+                 return data["result"]
+-        except aiohttp.ClientError as e:
+-            logger.error(f"Failed to connect to Pearl node: {type(e)=} {e=}")
++        except PearlRpcError:
++            raise
++        except Exception as e:
++            safe_error = self._redact_exception(e)
++            logger.error(
++                f"Pearl RPC transport error: type={type(e).__name__} error={safe_error}"
++            )
+             await asyncio.sleep(self.backoff_time)
+             self.backoff_time = min(self.backoff_time * 2, self.max_backoff)
+-            raise ConnectionError(f"Failed to connect to Pearl node: {e}") from e
++            raise ConnectionError(
++                f"Pearl RPC transport error: {type(e).__name__}: {safe_error}"
++            ) from None
+ 
+     async def get_block_template(self) -> BlockTemplate:
+         """Fetch the latest block template from the Pearl node."""
+@@ -110,5 +161,6 @@
+         if result is None:
+             return "accepted"
+         else:
+-            logger.warning(f"Block rejected: {result}")
+-            return f"rejected: {result}"
++            safe_result = _redact_text(result, self._rpc_user, self._rpc_password)
++            logger.warning(f"Block rejected: {safe_result}")
++            return f"rejected: {safe_result}"
+diff -ruN a/src/pearl_gateway/submission_service.py b/src/pearl_gateway/submission_service.py
+--- a/src/pearl_gateway/submission_service.py	2026-10-03 16:33:36
++++ b/src/pearl_gateway/submission_service.py	2026-10-03 18:47:30
+@@ -1,4 +1,6 @@
+ import asyncio
++import hashlib
++import json
+ from typing import TYPE_CHECKING, Any
+ 
+ from miner_utils import get_logger
+@@ -14,6 +16,47 @@
+ logger = get_logger(__name__)
+ 
+ 
++def _header_identity(template: BlockTemplate) -> dict[str, Any]:
++    header_bytes = template.header.serialize_without_proof_commitment()
++    return {
++        "header_hash": hashlib.blake2s(header_bytes, digest_size=16).hexdigest(),
++        "header_prefix": header_bytes[:8].hex(),
++        "template_height": template.height,
++        "template_time": template.header.timestamp,
++        "cert_version": int(template.required_cert_version),
++    }
++
++
++def _gateway_event(event: str, **fields: Any) -> str:
++    payload = {"event": event, **fields}
++    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
++
++
++def _classify_submission_error(stage: str, exc: BaseException) -> str:
++    if isinstance(exc, (ConnectionError, TimeoutError, asyncio.TimeoutError)):
++        return "transport"
++    if stage == "node":
++        return "transport"
++    return "proving-error"
++
++
++def _classify_submit_result(result: str) -> str:
++    if result == "accepted":
++        return "accepted"
++    lowered = str(result).lower()
++    if "duplicate" in lowered or "already" in lowered:
++        return "duplicate"
++    if "stale" in lowered or "old header" in lowered or "orphan" in lowered:
++        return "stale"
++    if lowered.startswith("rejected:"):
++        return "consensus-invalid"
++    return "transport"
++
++
++def _error_type(exc: BaseException) -> str:
++    return type(exc).__name__
++
++
+ class SubmissionService:
+     """
+     Handles block submissions from miners to the Pearl node.
+@@ -50,48 +93,81 @@
+         return ProofGenerator.generate_block(plain_proof, template, self.debug_mode)
+ 
+     async def submit_plain_proof(
+-        self, plain_proof: PlainProof | PlainProofV4, template: BlockTemplate
++        self,
++        plain_proof: PlainProof | PlainProofV4,
++        template: BlockTemplate,
++        submission_identity: dict[str, Any] | None = None,
+     ) -> dict[str, Any]:
+         """
+         Submit a block built from a plain proof and the current template.
+         Returns the result of the submission.
+         """
+         async with self.submission_lock:
++            identity = _header_identity(template)
++            if submission_identity:
++                identity.update(submission_identity)
++            stage = "proving"
+             try:
+                 if template.header.serialize_without_proof_commitment() in self.submission_log:
+-                    logger.warning("Block already submitted, skipping")
++                    logger.warning(
++                        _gateway_event(
++                            "duplicate_block_submission", classification="duplicate", **identity
++                        )
++                    )
+                     return {"status": "already_submitted"}
+ 
+-                logger.info(
+-                    f"Received PlainProof submission for template time {template.header.timestamp}"
+-                )
++                logger.info(_gateway_event("plain_proof_received", **identity))
+ 
+                 # Reject proofs that cannot be certified at the version the block requires.
+                 try:
+                     check_cert_version_eligible(template.required_cert_version, plain_proof)
+                 except ValueError as e:
+-                    logger.warning(f"Rejecting proof: {e}")
++                    logger.warning(
++                        _gateway_event(
++                            "plain_proof_rejected",
++                            classification="proving-error",
++                            error_type=type(e).__name__,
++                            **identity,
++                        )
++                    )
+                     return {"status": f"error: {e}"}
+ 
+                 block = await self._build_block(plain_proof, template)
+ 
+                 # Submit to the Pearl node
+                 self.submitted_blocks += 1
++                stage = "node"
+                 result = await self.pearl_client.submit_block(block.serialize().hex())
+                 # Update counters based on result
+                 if result == "accepted":
+                     self.accepted_blocks += 1
+                     self.submission_log.add(template.header.serialize_without_proof_commitment())
+-                    logger.info("Block accepted by node!")
++                    logger.info(_gateway_event("block_accepted", classification="accepted", **identity))
+                 else:
+                     self.rejected_blocks += 1
+-                    logger.warning(f"Block rejected: {result}")
++                    classification = _classify_submit_result(result)
++                    logger.warning(
++                        _gateway_event(
++                            "block_rejected",
++                            result=result,
++                            classification=classification,
++                            **identity,
++                        )
++                    )
+ 
+                 # Return result to miner
+                 return {"status": result}
+ 
+             except Exception as e:
+-                logger.exception(
+-                    f"Error submitting block: {e=}, {type(e)=}, {plain_proof=}, {template=}"
++                classification = _classify_submission_error(stage, e)
++                logger.error(
++                    _gateway_event(
++                        "block_submission_error",
++                        stage=stage,
++                        phase=stage,
++                        classification=classification,
++                        error_type=_error_type(e),
++                        **identity,
++                    )
+                 )
+-                return {"status": f"error: {str(e)}"}
++                return {"status": f"error: {classification}"}

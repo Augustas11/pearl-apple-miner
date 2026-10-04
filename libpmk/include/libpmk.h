@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 #ifndef LIBPMK_H
 #define LIBPMK_H
 #include <stdint.h>
@@ -71,5 +72,8 @@ void pmk_activity_end(pmk_activity activity);
 int32_t pmk_power_source(void);
 #ifdef __cplusplus
 }
+#endif
+#ifndef PMK_V4_H
+#include "pmk_v4.h"
 #endif
 #endif

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 import Foundation
 import Metal
 
@@ -351,10 +352,7 @@ private struct ProbeVector {
     let tiles: [UInt32]
 
     static func load() throws -> ProbeVector {
-        let base = Bundle.module.resourceURL?.appendingPathComponent("probe/v1_256x256x4096")
-        guard let base else {
-            throw PMKProbeError.resource("Bundle.module resource URL unavailable")
-        }
+        let base = try pmkResourceURL("probe/v1_256x256x4096")
         let jobURL = base.appendingPathComponent("job.json")
         let jobData: Data
         do {

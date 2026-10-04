@@ -1,8 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
 import asyncio
-import contextlib
+import base64
 import json
+import time
+import contextlib
 from collections import deque
 from pathlib import Path
 
@@ -10,6 +13,7 @@ import pytest
 
 import pmk_miner.pool as pool_mod
 from pmk_miner.monitor import DIFF1_TARGET, bits_to_target
+from pmk_miner.v4_admission import V4_G3_ADMISSION_ENV, V4_VENDOR_PEARL_FP8
 from pmk_miner.pool import (
     PoolClient,
     PoolMessage,
@@ -22,6 +26,19 @@ from pmk_miner.pool import (
     target_to_share_nbits,
     validate_pool_notify,
 )
+
+
+def write_v4_admission(tmp_path, monkeypatch, **overrides):
+    now=time.time()
+    record={"schema":"pmk-v4-admission-v1","gpu_name":"Unit GPU","device_class":"Apple7-9",
+        "os_build":"unit-os","cache_key":"unit-cache","kernel":"E","metal_language":"3.1",
+        "library_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","vendor_pearl_fp8":V4_VENDOR_PEARL_FP8,"v4_g3_passed":True,"exact_cells":100_000_000,
+        "last_probe_unix":now-1,"valid_until_unix":now+3600}
+    record.update(overrides)
+    path=tmp_path / "v4-admission.json"
+    path.write_text(json.dumps({"devices":[record]}), encoding="utf-8")
+    monkeypatch.setenv(V4_G3_ADMISSION_ENV,str(path))
+    return path
 
 
 def header(*, bits: int = 0x1D00FFFF) -> bytes:
@@ -85,15 +102,28 @@ def test_valid_notify_builds_immutable_pool_job():
     assert job.template_identity == job.header.hex()
 
 
-@pytest.mark.parametrize("cert_version", [None, 4])
-def test_notify_rejects_missing_or_wrong_cert_version(cert_version):
+def test_notify_rejects_missing_cert_version():
     params = notify_params()
-    if cert_version is None:
-        del params["cert_version"]
-    else:
-        params["cert_version"] = cert_version
-    with pytest.raises(PoolProtocolError, match="cert_version=3"):
+    del params["cert_version"]
+    with pytest.raises(PoolProtocolError, match="cert_version"):
         validate_pool_notify(params, session_id=1)
+
+
+def test_v4_notify_accepts_explicit_ancestor_header_extension(tmp_path, monkeypatch):
+    write_v4_admission(tmp_path,monkeypatch)
+    ancestor = b"a" * 108
+    job = validate_pool_notify(
+        notify_params(cert_version=4, ancestor_headers=[base64.b64encode(ancestor).decode()]),
+        session_id=1,
+    )
+    assert job.cert_version == 4
+    assert job.ancestor_headers == (ancestor,)
+    assert job.template_identity.endswith(job.header.hex())
+
+
+def test_notify_rejects_unknown_cert_version():
+    with pytest.raises(PoolProtocolError, match="cert_version=3 or cert_version=4"):
+        validate_pool_notify(notify_params(cert_version=5), session_id=1)
 
 
 @pytest.mark.parametrize("hex_len", [150, 151, 153, 154])
@@ -143,7 +173,7 @@ def test_difficulty_floor_rejects_easy_target():
 def test_notify_rejects_config_fields_and_non_strict_integers():
     with pytest.raises(PoolProtocolError, match="configuration"):
         validate_pool_notify(notify_params(k=4096), session_id=1)
-    with pytest.raises(PoolProtocolError, match="cert_version=3"):
+    with pytest.raises(PoolProtocolError, match="cert_version"):
         validate_pool_notify(notify_params(cert_version=True), session_id=1)
     with pytest.raises(PoolProtocolError, match="height"):
         validate_pool_notify(notify_params(height=True), session_id=1)
@@ -361,7 +391,7 @@ async def _bad_cert_notify_fails_run_and_invalidates_session():
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         authorize = json.loads(await reader.readline())
         writer.write(frame({"id": authorize["id"], "result": True, "error": None}))
-        writer.write(frame({"id": None, "method": "mining.notify", "params": notify_params(cert_version=4)}))
+        writer.write(frame({"id": None, "method": "mining.notify", "params": notify_params(cert_version=5)}))
         await writer.drain()
         await asyncio.sleep(0.1)
         writer.close()
@@ -378,7 +408,7 @@ async def _bad_cert_notify_fails_run_and_invalidates_session():
         log=lambda event, **kw: logs.append((event, kw)),
     )
     stop = asyncio.Event()
-    with pytest.raises(PoolProtocolError, match="cert_version=3"):
+    with pytest.raises(PoolProtocolError, match="cert_version"):
         await client.run(stop)
     assert client.latest is None
     assert client.session_id > 1

@@ -1,6 +1,9 @@
+# SPDX-License-Identifier: Apache-2.0
 """Exercise the actual CLI submission/restart orchestration without GPU work."""
 import asyncio
+import json
 from pathlib import Path
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -9,6 +12,38 @@ import pmk_miner.__main__ as cli
 from pmk_miner.native import NativeError
 from pmk_miner.monitor import bits_to_target
 from pmk_miner.transport import GatewayJob, SubmissionLedger, SubmissionOutcome, TransportError
+from pmk_miner.v4_admission import V4_G3_ADMISSION_ENV, V4_VENDOR_PEARL_FP8
+
+
+def write_v4_admission(tmp_path, monkeypatch):
+    now=time.time()
+    record={"schema":"pmk-v4-admission-v1","gpu_name":"Unit GPU","device_class":"Apple7-9",
+        "os_build":"unit-os","cache_key":"unit-cache","kernel":"E","metal_language":"3.1",
+        "library_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","vendor_pearl_fp8":V4_VENDOR_PEARL_FP8,"v4_g3_passed":True,"exact_cells":100_000_000,
+        "last_probe_unix":now-1,"valid_until_unix":now+3600}
+    path=tmp_path / "v4-admission.json"
+    path.write_text(json.dumps({"devices":[record]}), encoding="utf-8")
+    monkeypatch.setenv(V4_G3_ADMISSION_ENV,str(path))
+    return path
+
+
+def test_stop_cancels_long_lived_submission_trackers():
+    async def exercise():
+        cancelled=asyncio.Event()
+
+        async def tracker():
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+        task=asyncio.create_task(tracker())
+        await asyncio.sleep(0)
+        await cli.cancel_pending_tasks({task})
+        assert task.cancelled()
+        assert cancelled.is_set()
+
+    asyncio.run(exercise())
 
 
 def setup_miner(monkeypatch, tmp_path, outcomes, *, lose_ack=False):
@@ -61,6 +96,7 @@ def setup_miner(monkeypatch, tmp_path, outcomes, *, lose_ack=False):
     monkeypatch.setattr(cli, 'validate_payout_startup', lambda *a, **kw: None)
     monkeypatch.setattr(GatewayJob, 'authorize_coinbase', lambda *a, **kw: None)
     monkeypatch.setattr(cli.Shape, 'validate', lambda *a, **kw: 1)
+    monkeypatch.setattr(cli.Shape, 'memory_estimate', lambda *a, **kw: 1)
     monkeypatch.setattr(cli, 'log', lambda *a, **kw: None)
     return job, config, calls, SimpleNamespace(gateway='localhost:1', config=tmp_path/'config')
 
@@ -72,6 +108,30 @@ def test_restart_confirms_outstanding_before_dispatch_and_never_resubmits(monkey
     asyncio.run(cli.mine(args, config))
     assert calls['submitted'] == []
     assert calls['dispatched'] == 0
+    assert SubmissionLedger(ledger.path).entries()[entry.submission_id].outcome == SubmissionOutcome.ACCEPTED
+
+
+def test_restart_reconstructs_outstanding_v4_submission_without_downgrade(monkeypatch, tmp_path):
+    write_v4_admission(tmp_path,monkeypatch)
+    job, config, calls, args = setup_miner(monkeypatch, tmp_path, [SubmissionOutcome.ACCEPTED])
+    ancestors=(b"a"*108,b"b"*108)
+    v4_job=GatewayJob(job.header,bits_to_target(0x177fd82e),4,ancestor_headers=ancestors)
+    ledger=SubmissionLedger(tmp_path/'state/submissions.jsonl')
+    entry=ledger.prepare(v4_job,'YQ==')
+    tracked=[]
+
+    class Tracker:
+        def __init__(self, *_args, **_kw): pass
+        async def track(self, source):
+            tracked.append(source)
+            return SubmissionOutcome.ACCEPTED
+
+    monkeypatch.setattr(cli, 'SubmissionTracker', Tracker)
+    asyncio.run(cli.mine(args,config))
+    assert calls['submitted'] == []
+    assert calls['dispatched'] == 0
+    assert tracked[0].cert_version == 4
+    assert tracked[0].ancestor_headers == ancestors
     assert SubmissionLedger(ledger.path).entries()[entry.submission_id].outcome == SubmissionOutcome.ACCEPTED
 
 

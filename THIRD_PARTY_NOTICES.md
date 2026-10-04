@@ -17,7 +17,16 @@ Source: https://github.com/pearl-research-labs/pearl. pmk builds against it (it 
 
 - `bench/v4_emulation/oracle/src/stubs/noise.rs` and
   `bench/v4_emulation/oracle/src/stubs/public_params.rs`: verbatim copies of parts of
-  `zk-pow/src/api/fp8/noise.rs` and `public_params.rs` (fp8-scheme commit 25695462416f0eb069abe7a515d188882078bf70).
+  `zk-pow/src/api/fp8/noise.rs` and `public_params.rs` (historical fp8-scheme
+  commit 25695462416f0eb069abe7a515d188882078bf70).
+- `pmkcore/v4/`, `pmkcore/include/pmkcore_v4.h`, `libpmk/Sources/PMK/V4.swift`,
+  `libpmk/include/pmk_v4.h`, `libpmk/metal/v4.metal`, `libpmk/resources/v4_probe/`,
+  the cert-v4 portions of `miner/pmk_miner/`, the v4 G3/regtest tooling in
+  `scripts/pmk_v4_*.py`, `scripts/*_v4.py`, and `scripts/*_v4.sh`, and the v4 gateway patch derive
+  from Pearl's fp8-scheme APIs, proof formats, B200 emulation, and verifier path
+  at commit f696760b259500ecb608469ea3953aeabbe78948. Those source files carry
+  Apache-2.0 SPDX headers and retain this ISC notice for their Pearl-derived
+  portions.
 - `libpmk/metal/` BLAKE3 keyed compression: a Metal port of the BLAKE3 round/compression structure used in
   `miner/pearl-gemm/csrc/blake3/blake3.cuh` (pearl-gemm has no separate license; it falls under the repository
   root ISC license below).

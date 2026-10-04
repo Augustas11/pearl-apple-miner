@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Callback-driven slot ownership; the sole release owner is the job coroutine."""
 from __future__ import annotations
 import asyncio
@@ -6,7 +7,7 @@ from dataclasses import dataclass, field
 import time
 import subprocess
 from .native import CALLBACK, Desc, PTR, NativeError, words
-from .scheme import V3_SCHEME
+from .scheme import V3_SCHEME, scheme_for_cert_version
 from .transport import redact_credentials
 
 class FatalDeviceError(RuntimeError):
@@ -148,6 +149,13 @@ class Shape:
             raise ValueError('v1 requires 2–3 slots, rank 128, k in [2048,8192] divisible by 128')
         if any(x<=0 or x>2**24 or x%64 for x in (self.m,self.n)):
             raise ValueError('SG dimensions must be positive multiples of 64 <= 2^24')
+        return self.memory_estimate(ram)
+
+    def memory_estimate(self,ram=None):
+        if self.slots not in (2,3):
+            raise ValueError('requires 2–3 retained slots')
+        if any(type(x) is not int or x<=0 or x>2**24 for x in (self.m,self.n,self.k)):
+            raise ValueError('shape dimensions must be positive integers <= 2^24')
         raw=(self.m+self.n)*self.k
         if 6*raw > 1024**3:
             raise ValueError('shape exceeds retained pmkcore oracle resource limit')
@@ -254,9 +262,42 @@ def collect_finds(result,recover,max_recovery_finds=320):
     return [(r,c,*merged[(r,c)]) for r,c in sorted(merged)]
 
 
-def verify_gate(header,proof,config,share_nbits=None,invoke=None,scheme=V3_SCHEME):
+def _v4_stats_fields(result, scheme=None):
+    if getattr(scheme,'cert_version',None) != 4:
+        return {}
+    stats = getattr(result,'stats',None)
+    if stats is None:
+        return {}
+    def value(name, default=0):
+        try:
+            return int(getattr(stats,name,default))
+        except (TypeError,ValueError):
+            return int(default)
+    fallback = value('fallback_groups')
+    total = value('total_groups')
+    rate = (fallback / total) if total > 0 else 0.0
+    return {
+        'fallback_per_job': fallback,
+        'fallback_groups': fallback,
+        'total_groups': total,
+        'fallback_rate': rate,
+        'fallback_alert': bool(value('fallback_alert')),
+        'layout_failures': value('layout_failures'),
+        'quantized_a': value('quantized_a'),
+        'quantized_b': value('quantized_b'),
+        'quant_saturated_a': value('quant_saturated_a'),
+        'quant_saturated_b': value('quant_saturated_b'),
+        'quant_nan_a': value('quant_nan_a'),
+        'quant_nan_b': value('quant_nan_b'),
+    }
+
+
+def verify_gate(header,proof,config,share_nbits=None,invoke=None,scheme=V3_SCHEME,native=None):
     try:
-        scheme.validate_proof(header,proof,config,share_nbits,invoke=invoke)
+        if native is not None and hasattr(scheme,'validate_proof_native'):
+            scheme.validate_proof_native(native,header,proof,config,share_nbits)
+        else:
+            scheme.validate_proof(header,proof,config,share_nbits,invoke=invoke)
     except ValueError as exc:
         raise FatalDeviceError.verifier_at(
             getattr(exc,'function','Scheme.validate_proof'),str(exc)) from exc
@@ -267,26 +308,58 @@ class Pipeline:
         self.submission_policy=submission_policy or SoloSubmissionPolicy()
         self.max_gpu_seconds=max_gpu_seconds
         self.desktop=desktop
-        self.config=scheme.build_config(native,shape.m,shape.n,shape.k)
         try:
-            scheme.validate_config(self.config)
+            self.config=self._build_config(scheme)
         except ValueError as exc:
-            raise FatalDeviceError.device(str(exc),function='Scheme.validate_config') from exc
+            if scheme is not V3_SCHEME:
+                raise FatalDeviceError.device(str(exc),function='Scheme.validate_config') from exc
+            self.config=None
         self.a=native.alloc(shape.m*shape.k)
         self.b=[native.alloc(shape.n*shape.k) for _ in range(shape.slots)]
         self.template=None; self.source=None; self.records={}; self.sequence=0
         self.stopped=False; self.gpu_rate=None; self.inflight=0
 
+    def _validate_shape_for_scheme(self,scheme):
+        if scheme is V3_SCHEME:
+            self.shape.validate()
+        elif hasattr(scheme,'validate_shape'):
+            scheme.validate_shape(self.shape)
+
+    def _build_config(self,scheme):
+        config=scheme.build_config(self.native,self.shape.m,self.shape.n,self.shape.k)
+        scheme.validate_config(config)
+        return config
+
     def set_template(self,source):
         if hasattr(source,'cert_version'):
-            self.scheme.validate_cert_version(source.cert_version)
+            if getattr(self.scheme,'cert_version',None) == source.cert_version:
+                next_scheme=self.scheme
+            else:
+                next_scheme=scheme_for_cert_version(source.cert_version)
+            self._validate_shape_for_scheme(next_scheme)
+            if hasattr(next_scheme,'admit_source'):
+                next_scheme.admit_source(source,self.native)
+            else:
+                next_scheme.validate_cert_version(source.cert_version)
+        else:
+            next_scheme=self.scheme
+            self._validate_shape_for_scheme(next_scheme)
         if self.records:
             raise RuntimeError('cannot replace A while retained jobs exist')
-        if self.source is not None and self.source.template_identity == source.template_identity:
+        if (self.source is not None and self.source.template_identity == source.template_identity
+                and self.scheme is next_scheme and self.config is not None):
             self.source=source
             return
+        if self.scheme is not next_scheme or self.config is None:
+            try:
+                config=self._build_config(next_scheme)
+            except ValueError as exc:
+                raise FatalDeviceError.device(str(exc),function='Scheme.validate_config') from exc
+            self.scheme=next_scheme
+            self.config=config
+            self.gpu_rate=None
         s=self.shape
-        self.template=self.scheme.build_template(self.native,source,self.config,s,self.a)
+        self.template=next_scheme.build_template(self.native,source,self.config,s,self.a)
         self.source=source
 
     def bounds(self,target):
@@ -370,7 +443,7 @@ class Pipeline:
                         record.stage_seconds['build_cpu']=time.thread_time()-cpu_start
                         record.stage_seconds['build_native']=time.monotonic()-native_start
             stage_start=time.monotonic()
-            seeds=await drain_thread(prepare)
+            job=await drain_thread(prepare)
             record.stage_seconds['build']=time.monotonic()-stage_start
             stage_start=time.monotonic()
             if self.stopped or not is_current(record.source):
@@ -378,9 +451,15 @@ class Pipeline:
                 return record
             if self.max_gpu_seconds is not None and self.gpu_rate and s.ops/self.gpu_rate>self.max_gpu_seconds:
                 raise FatalDeviceError.device('predicted command buffer exceeds 400 ms; reduce shape')
-            desc=Desc(abi_version=1,m=s.m,n=s.n,k=s.k,a=self.a,bt=self.b[index],a_bytes=s.m*s.k,bt_bytes=s.n*s.k,
-                a_seed=words(bytes(seeds.a_noise_seed)),b_seed=words(bytes(seeds.b_noise_seed)),block_bound=words(block),share_bound=words(share),
-                block_capacity=s.result_capacity,share_capacity=s.result_capacity,cert_version=scheme.kernel_cert_version(),rank=scheme.rank,job_id=record.job_id)
+            if hasattr(scheme,'job_descriptor'):
+                desc=scheme.job_descriptor(native,record.source,job,s,self.a,self.b[index],block,share,record.job_id)
+            else:
+                desc=Desc(abi_version=1,m=s.m,n=s.n,k=s.k,a=self.a,bt=self.b[index],
+                    a_bytes=s.m*s.k,bt_bytes=s.n*s.k,
+                    a_seed=words(bytes(job.a_noise_seed)),b_seed=words(bytes(job.b_noise_seed)),
+                    block_bound=words(block),share_bound=words(share),
+                    block_capacity=s.result_capacity,share_capacity=s.result_capacity,
+                    cert_version=scheme.kernel_cert_version(),rank=scheme.rank,job_id=record.job_id)
             if self.desktop:
                 desktop_owned=await self.desktop.before_dispatch(
                     lambda: self.stopped or not is_current(record.source))
@@ -408,7 +487,7 @@ class Pipeline:
             self.inflight-=1
             gpu_counted=False
             stage_start=time.monotonic()
-            result=native.poll(record.handle)
+            result=scheme.poll_kernel(native,record.handle) if hasattr(scheme,'poll_kernel') else native.poll(record.handle)
             self.record_completed_work(record,result)
             if desktop_owned:
                 self.desktop.after_gpu(result.gpu_start_time,result.gpu_end_time)
@@ -428,7 +507,9 @@ class Pipeline:
             submit_seconds = 0.0
             def open_oracle():
                 with native.measured(record):
-                    context = scheme.oracle(native,record.source,self.config,s,self.a,self.b[index])
+                    oracle_operand = (scheme.oracle_operand(job,self.b[index])
+                        if hasattr(scheme,'oracle_operand') else self.b[index])
+                    context = scheme.oracle(native,record.source,self.config,s,self.a,oracle_operand)
                     retained['context'] = context
                     retained['oracle'] = context.__enter__()
             def close_oracle():
@@ -441,7 +522,11 @@ class Pipeline:
                     def scan_finds():
                         with native.measured(record):
                             recovery_limit = desc.block_capacity + desc.share_capacity
-                            return collect_finds(result,lambda:native.scan(retained['oracle'],share,block),recovery_limit)
+                            if hasattr(scheme,'scan_oracle'):
+                                scan = lambda: scheme.scan_oracle(native,retained['oracle'],share,block)
+                            else:
+                                scan = lambda: native.scan(retained['oracle'],share,block)
+                            return collect_finds(result,scan,recovery_limit)
                     found=await drain_thread(scan_finds)
                     proof_seconds += time.monotonic()-stage_start
                     record.pending_finds=len(found); record.move('proving')
@@ -469,7 +554,7 @@ class Pipeline:
                                     except (ValueError,TypeError) as exc:
                                         raise FatalDeviceError.verifier_at('Scheme.decode_proof','v3 verifier gate failed: malformed proof') from exc
                                     verify_gate(record.source.header,proof,self.config,
-                                        gate_nbits,invoke=native.foreign,scheme=self.scheme)
+                                        gate_nbits,invoke=native.foreign,scheme=self.scheme,native=native)
                                     return self.submission_policy.verified_candidate(
                                         kind=kind,
                                         job=record.source,
@@ -501,10 +586,15 @@ class Pipeline:
             record.stage_seconds['submit']=submit_seconds
             if record.state=='proving':
                 record.move('submitted')
+            v4_stats = _v4_stats_fields(result,scheme)
+            if v4_stats and s.k <= 4096 and v4_stats['fallback_rate'] > 0.01:
+                self.log('v4_fallback_warning',job_id=record.job_id,severity='warning',
+                    k=s.k,fallback_rate=v4_stats['fallback_rate'],
+                    fallback_per_job=v4_stats['fallback_per_job'],total_groups=v4_stats['total_groups'])
             self.log('completed',job_id=record.job_id,ops=s.ops,shares=result.share_count,blocks=result.block_count,
                 overflow=bool(result.overflow),gpu_seconds=gpu,
                 gpu_start_time=result.gpu_start_time,gpu_end_time=result.gpu_end_time,
-                wall_seconds=time.monotonic()-record.started)
+                wall_seconds=time.monotonic()-record.started,**v4_stats)
             return record
         except BaseException as exc:
             self.cancel()
@@ -525,14 +615,23 @@ class Pipeline:
                         continue
                 if result is None:
                     try:
-                        result=native.poll(record.handle)
+                        result=scheme.poll_kernel(native,record.handle) if hasattr(scheme,'poll_kernel') else native.poll(record.handle)
                         self.record_completed_work(record,result)
                     except Exception:
                         pass
                 if record.state=='gpu':
                     record.move('scanned')
                 record.pending_finds=0
-                native.release(record.handle)
+                if hasattr(scheme,'release_kernel'):
+                    scheme.release_kernel(native,record.handle)
+                else:
+                    native.release(record.handle)
+            if 'job' in locals():
+                try:
+                    if hasattr(scheme,'release_job'):
+                        scheme.release_job(native,job)
+                except Exception:
+                    pass
             if desktop_owned:
                 if result is not None:
                     self.desktop.after_gpu(result.gpu_start_time,result.gpu_end_time)

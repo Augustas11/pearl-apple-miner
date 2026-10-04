@@ -2,7 +2,7 @@
 
 ## Quick start
 
-Requirements: an Apple Silicon Mac (M1–M4; M5 is experimental), macOS 14+, Xcode Command Line Tools, Git, [rustup](https://rustup.rs/), and [uv](https://docs.astral.sh/uv/).
+Requirements: an Apple Silicon Mac (M1–M5), macOS 14+, Xcode Command Line Tools, Git, [rustup](https://rustup.rs/), and [uv](https://docs.astral.sh/uv/).
 
 ```sh
 git clone https://github.com/Augustas11/pearl-apple-miner.git
@@ -27,7 +27,7 @@ No wallet yet? Get the official Pearl Wallet from https://github.com/pearl-resea
 
 Beta: open an issue or DM [@_aug11_](https://x.com/_aug11_) on X.
 
-A Pearl (PRL) proof-of-useful-work miner for Apple Silicon, written for Metal. It mines the cert v3 scheme only.
+A Pearl (PRL) proof-of-useful-work miner for Apple Silicon, written for Metal. It mines the cert-v3 and cert-v4 schemes.
 
 pmk builds a Pearl job, runs the noisy int8 GEMM and hash search on the GPU, and turns a hit into a PlainProof
 that Pearl's own verifier accepts. The GEMM is exact: int8 operands, int32 sums, checked bit for bit against a CPU oracle.
@@ -50,8 +50,14 @@ Experimental. Results so far, all from this code:
 - Mainnet pool shares accepted at HeroMiners (October 2026).
 - A three-lane code, security and architecture audit finished with 0 critical, high or medium findings.
 
-It mines PRL cert v3 only. The cert v4 / FP8 fork will need a new path:
-https://github.com/pearl-research-labs/pips/issues/14
+## v4 / FP8 fork
+
+- On the same 80-GPU-core M3 Ultra, the paired production-shape benchmark measured 15.9 TOPS for v3 and 8.1 TOPS-eq for v4, a 0.51× ratio.
+- G3-v4 checked 105 million output cells with 0 mismatches.
+- The v4 regtest mined 3 cert-v4 blocks.
+- No public pool runs cert v4 yet.
+
+The miner switches automatically when the pool or node sends `cert_version = 4`; the admission file written by `scripts/install.sh` is passed automatically.
 
 Summaries of the runs are in `bench/evidence/`. Raw logs are not published.
 
@@ -67,14 +73,15 @@ Summaries of the runs are in `bench/evidence/`. Raw logs are not published.
 From the repo root:
 
 ```sh
-# 1. Pearl sources (pmkcore depends on vendor/pearl at a pinned commit; vendor/ is gitignored)
-scripts/fetch_vendor.sh            # add --fp8 only for bench/v4_emulation
+# 1. Pearl sources (v3 and v4 pins; vendor/ is gitignored)
+scripts/fetch_vendor.sh --fp8
 
 # 2. Python env: Pearl packages, py-pearl-mining (maturin), torch
 scripts/setup_env.sh               # creates .venv
 
 # 3. Native pieces
 (cd pmkcore && cargo build --release)
+(cd pmkcore/v4 && cargo build --release)
 (cd libpmk && swift build -c release)
 
 # 4. Miner dependencies (hash-pinned)
@@ -91,8 +98,8 @@ Regtest runs and two harness tests need a local `pearld`: `scripts/build_pearld.
 Pool mode also needs a py-pearl-mining build with the bound-helper patch:
 `scripts/pmk_build_pool_binding.sh --install` (see `miner/README.md`).
 
-What comes from where: `vendor/pearl` (Pearl Research Labs, pinned in `scripts/fetch_vendor.sh`) is the only external
-checkout. OpenJarvis is already vendored in `upstream/openjarvis`, so it is not fetched.
+What comes from where: `vendor/pearl` and `vendor/pearl-fp8` (Pearl Research Labs, pinned in
+`scripts/fetch_vendor.sh`) are the external checkouts. OpenJarvis is already vendored in `upstream/openjarvis`, so it is not fetched.
 `bench/oj_mps_bench.py` additionally needs a copy of one OpenJarvis file (see its header).
 
 ## G3 admission (M1 to M4)
@@ -107,6 +114,9 @@ dist/studio_b4/b4_window.sh            # full window; add --quick for a short se
 
 Details are in `scripts/studio_b4/README.md`. The record is read from `PMK_G3_ADMISSION_FILE`.
 Run it on an otherwise idle machine.
+
+The installer separately runs the 105-million-cell v4 admission and writes `~/.pmk/v4-g3-admission.json`.
+If that check fails, installation retains cert-v3 mining and reports that v4 is not admitted on the Mac.
 
 ## Run in pool mode
 
@@ -147,12 +157,15 @@ Solo mode talks to a local Pearl gateway and node. Setup, config and the regtest
 
 ```sh
 (cd pmkcore && cargo test --release)                      # needs .venv with pearl_mining
+(cd pmkcore/v4 && cargo test --release)
 (cd libpmk && swift test -c release)                      # uses the GPU
 PYTHONPATH=miner .venv/bin/python -m pytest miner/tests   # fast subset: -k "not regtest"
 .venv/bin/python -m pytest scripts/studio_b4              # harness tests
 ```
 
 GPU tests take `/tmp/pmm-gpu-bench.lock`; do not run them next to a benchmark.
+
+The v4 solo/gateway tests need the pinned v4 node and gateway built first: `scripts/pmk_build_pearld_v4.sh`, then `scripts/pmk_build_gateway_python_v4.sh`. Pool mining does not need them.
 
 ## Warnings
 

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Object-dialect Pearl pool transport for pmk pool mode."""
 
 from __future__ import annotations
@@ -18,10 +19,13 @@ from enum import StrEnum
 from typing import Any, Callable
 
 from .monitor import DIFF1_TARGET, bits_to_target, target_to_bits_floor
+from .v4_admission import validate_v4_g3_admission_file
 
 
 CERT_VERSION_ZK_V3 = 3
+CERT_VERSION_FP8_V4 = 4
 HEADER_LEN = 76
+ANCESTOR_HEADER_LEN = 108
 MAX_U256 = (1 << 256) - 1
 MAX_POOL_LINE = 64 * 1024
 DEFAULT_REPLY_TIMEOUT_SECONDS = 30.0
@@ -86,6 +90,7 @@ class PoolJob:
     height: int | None
     share_nbits: int
     session_id: int
+    ancestor_headers: tuple[bytes, ...] = ()
 
     @property
     def bits(self) -> int:
@@ -97,7 +102,11 @@ class PoolJob:
 
     @property
     def template_identity(self) -> str:
-        return self.header.hex()
+        if not self.ancestor_headers:
+            return self.header.hex()
+        import hashlib
+        ancestors = hashlib.blake2s(b"".join(self.ancestor_headers), digest_size=16).hexdigest()
+        return f"{self.cert_version}:{ancestors}:{self.header.hex()}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,6 +190,7 @@ def validate_pool_notify(
     target_hex = params.get("target")
     pool_job_id = params.get("job_id")
     cert_version = params.get("cert_version")
+    ancestor_headers_raw = params.get("ancestor_headers")
     height = params.get("height")
     if not isinstance(header_hex, str) or len(header_hex) != HEADER_LEN * 2:
         raise PoolProtocolError("notify header must be exactly 152 hex characters")
@@ -194,8 +204,26 @@ def validate_pool_notify(
         raise PoolProtocolError("notify job_id must be at most 64 printable ASCII characters")
     if not all(0x20 <= ord(ch) <= 0x7E for ch in pool_job_id):
         raise PoolProtocolError("notify job_id must be printable ASCII")
-    if isinstance(cert_version, bool) or cert_version != CERT_VERSION_ZK_V3:
-        raise PoolProtocolError("pool job requires cert_version=3")
+    if isinstance(cert_version, bool) or cert_version not in (CERT_VERSION_ZK_V3, CERT_VERSION_FP8_V4):
+        raise PoolProtocolError("pool job requires cert_version=3 or cert_version=4")
+    ancestor_headers: tuple[bytes, ...] = ()
+    if cert_version == CERT_VERSION_FP8_V4:
+        try:
+            validate_v4_g3_admission_file()
+        except ValueError as exc:
+            raise PoolProtocolError(str(exc)) from exc
+        if not isinstance(ancestor_headers_raw, list) or not ancestor_headers_raw:
+            raise PoolProtocolError("cert_version=4 pool job requires ancestor_headers")
+        try:
+            ancestor_headers = tuple(
+                base64.b64decode(item, validate=True) for item in ancestor_headers_raw
+            )
+        except (TypeError, ValueError) as exc:
+            raise PoolProtocolError("ancestor_headers must be base64 complete headers") from exc
+        if len(ancestor_headers) > 4 or any(len(item) != ANCESTOR_HEADER_LEN for item in ancestor_headers):
+            raise PoolProtocolError("ancestor_headers must contain 108-byte complete headers")
+    elif ancestor_headers_raw is not None:
+        raise PoolProtocolError("ancestor_headers are only valid for cert_version=4")
     if height is not None and (isinstance(height, bool) or not isinstance(height, int)):
         raise PoolProtocolError("notify height must be an integer")
 
@@ -227,6 +255,7 @@ def validate_pool_notify(
         height=height,
         share_nbits=share_nbits,
         session_id=session_id,
+        ancestor_headers=ancestor_headers,
     )
 
 
@@ -490,7 +519,7 @@ class PoolClient:
                     try:
                         self._handle_notify(message)
                     except PoolProtocolError as exc:
-                        if "cert_version=3" in str(exc):
+                        if "cert_version" in str(exc):
                             self._log("pool_job_rejected", reason="R-A6_cert_version")
                         self.fatal = exc
                         raise
@@ -629,15 +658,13 @@ class PoolClient:
             (getattr(socket, "TCP_KEEPINTVL", None), interval_seconds),
             (getattr(socket, "TCP_KEEPCNT", None), 3),
         )
-        configured = set()
+        configured: set[int] = set()
         for option, value in optional_options:
             if option is None or option in configured:
                 continue
             configured.add(option)
-            try:
+            with contextlib.suppress(AttributeError, OSError):
                 sock.setsockopt(socket.IPPROTO_TCP, option, value)
-            except (AttributeError, OSError):
-                pass
 
     def _log(self, event: str, **kwargs: Any) -> None:
         self.log(event, **{key: self._sanitize_log_value(value) for key, value in kwargs.items()})
