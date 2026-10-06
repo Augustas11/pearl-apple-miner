@@ -163,3 +163,91 @@ def test_uninstall_starts_detached_cleanup_without_exposing_credentials(tmp_path
     assert calls[0] == ("stop", None)
     assert calls[1][0] == "spawn"
     assert "tok" not in " ".join(calls[1][1])
+
+
+def test_kernel_is_known_before_first_miner_event(monkeypatch):
+    monkeypatch.setattr(beta_agent, "_initial_kernel", lambda cfg: "na")
+    miner = MinerProcess({"wallet": "prl1test", "worker": "w", "pool_url": "stratum+tcp://127.0.0.1:1"})
+    assert miner.kernel == "na"
+
+
+def test_initial_kernel_follows_device_class(monkeypatch):
+    from pmk_miner import kernel as kernel_mod
+    monkeypatch.setattr(kernel_mod, "detect_device_class", lambda: "Apple10")
+    assert beta_agent._initial_kernel({"kernel": "auto"}) == "na"
+    monkeypatch.setattr(kernel_mod, "detect_device_class", lambda: "Apple9")
+    assert beta_agent._initial_kernel({"kernel": "auto"}) == "sg"
+
+
+def test_not_working_until_gpu_work_completes_and_stop_clears_speed(monkeypatch):
+    miner = MinerProcess({"wallet": "prl1test", "worker": "w", "pool_url": "stratum+tcp://127.0.0.1:1"})
+    now = [100.0]
+    monkeypatch.setattr(beta_agent.time, "time", lambda: now[0])
+    assert miner.working is False
+    miner._parse_line('{"event":"pool_startup","effective_kernel":"na"}')
+    assert miner.working is False
+    miner._parse_line('{"event":"routine_telemetry","completed_ops":1000000000000}')
+    now[0] = 110.0
+    miner._parse_line('{"event":"routine_telemetry","completed_ops":21000000000000}')
+    assert miner.working is True
+    assert miner.tops_60s() == 2.0
+    miner.stop()
+    assert miner.working is False
+    assert miner.tops_60s() == 0.0
+
+
+def test_payload_reports_zero_speed_unless_mining(tmp_path, monkeypatch):
+    agent = beta_agent.Agent.__new__(beta_agent.Agent)
+    agent.cfg = {"version": "t", "label": "Mac"}
+    agent.miner = MinerProcess({"wallet": "prl1test", "worker": "w", "pool_url": "stratum+tcp://127.0.0.1:1"})
+    agent.miner.tops_samples.append((beta_agent.time.time(), 5.0))
+    agent.state = "paused"
+    agent.started = beta_agent.time.monotonic()
+    agent.effective_intensity = "full"
+    agent.last_error = None
+    agent.info = {}
+    monkeypatch.setattr(beta_agent, "power_source", lambda: "ac")
+    assert agent.payload()["tops"] == 0.0
+    assert agent.payload(state="mining")["tops"] == 5.0
+
+
+def test_loop_reports_a_change_quickly(monkeypatch, tmp_path):
+    agent = beta_agent.Agent.__new__(beta_agent.Agent)
+    agent.cfg = {"version": "t", "label": "Mac", "wallet": "prl1test"}
+    agent.controls = {"paused": False, "intensity": "full", "only_ac": True, "start_at_login": True,
+                      "uninstall": False, "poll_s": 30}
+    agent.miner = MinerProcess({"wallet": "prl1test", "worker": "w", "pool_url": "stratum+tcp://127.0.0.1:1"})
+    agent.miner.working = True
+    agent.state = "mining"
+    agent.effective_intensity = "full"
+    agent.started = beta_agent.time.monotonic()
+    agent.last_error = None
+    agent.info = {}
+    monkeypatch.setattr(beta_agent, "power_source", lambda: "ac")
+    monkeypatch.setattr(beta_agent, "control_path", lambda: tmp_path / "controls.json")
+    monkeypatch.setattr(beta_agent, "state_path", lambda: tmp_path / "state.json")
+
+    def apply_controls():
+        agent.state = "paused" if agent.controls["paused"] else "mining"
+    agent.apply_controls = apply_controls
+
+    class Client:
+        retry_delay = 30
+        def post(self, payload):
+            return {"paused": True, "intensity": "full", "only_ac": True, "start_at_login": True,
+                    "uninstall": False, "poll_s": 30}
+    agent.client = Client()
+    waits = []
+
+    class Stop(Exception):
+        pass
+
+    def wait(seconds):
+        waits.append(seconds)
+        raise Stop
+    monkeypatch.setattr(agent.miner.restart_requested, "wait", wait)
+    try:
+        agent.loop()
+    except Stop:
+        pass
+    assert waits == [beta_agent.FAST_REPORT_S]

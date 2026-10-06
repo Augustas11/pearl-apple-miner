@@ -21,6 +21,7 @@ import urllib.error
 import urllib.request
 
 VERSION = "0.2.0"
+FAST_REPORT_S = 11  # the server accepts one heartbeat per 10 s
 LABEL = "tech.malibu.pearl"
 REGIONS = ("de", "fr", "es", "fi", "ru", "ca", "us", "us2", "us3", "mx", "br", "kz", "hk", "kr", "in", "sg", "tr", "au")
 INTENSITY_PERCENT = {"low": 25, "medium": 50, "full": 100}
@@ -225,6 +226,16 @@ class HeartbeatClient:
         return None
 
 
+def _initial_kernel(cfg: dict[str, object]) -> str:
+    """Report the kernel this Mac will run before the miner's first event arrives."""
+    try:
+        from .kernel import resolve_v3_kernel
+        kernel, _ = resolve_v3_kernel(str(cfg.get("kernel", "auto")))
+        return kernel
+    except Exception:
+        return "sg"
+
+
 class MinerProcess:
     def __init__(self, cfg: dict[str, object]) -> None:
         self.cfg = cfg
@@ -241,8 +252,9 @@ class MinerProcess:
         self.shape_override: int | None = None
         self.active_shape: int | None = None
         self.initial_shape: int | None = None
-        self.kernel = "sg"
+        self.kernel = _initial_kernel(cfg)
         self.throttled = False
+        self.working = False
         self.last_shape_change = float("-inf")
         self.headroom_since: float | None = None
 
@@ -288,6 +300,9 @@ class MinerProcess:
         self.restart_requested.clear()
 
     def stop(self, timeout: float = 20.0) -> None:
+        self.working = False
+        self.tops_samples.clear()
+        self.ops_samples.clear()
         proc = self.process
         if proc is None:
             return
@@ -340,6 +355,8 @@ class MinerProcess:
                 completed_ops = event.get("completed_ops")
                 if isinstance(completed_ops, int) and completed_ops >= 0:
                     self.ops_samples.append((now, completed_ops))
+                    if completed_ops > 0:
+                        self.working = True
                 p90 = event.get("gpu_p90_seconds")
                 if isinstance(p90, (int, float)):
                     self._observe_gpu_p90(float(p90), now)
@@ -350,6 +367,8 @@ class MinerProcess:
                     self.throttled = bool(event["throttled"])
                 if event.get("kernel") in ("sg", "na"):
                     self.kernel = str(event["kernel"])
+            elif name == "completed":
+                self.working = True
             elif name == "pool_startup":
                 shape = event.get("shape")
                 if isinstance(shape, dict) and isinstance(shape.get("m"), int):
@@ -375,6 +394,8 @@ class MinerProcess:
         match = re.search(r"([0-9]+(?:\.[0-9]+)?) TOPS .*accepted=([0-9]+) rejected=([0-9]+)", line)
         if match:
             self.tops_samples.append((now, float(match.group(1))))
+            if float(match.group(1)) > 0:
+                self.working = True
             self.accepted = max(self.accepted, int(match.group(2)))
             self.rejected = max(self.rejected, int(match.group(3)))
 
@@ -477,6 +498,11 @@ class Agent:
                     return
                 self.apply_controls()
             sleep_for = int(self.controls.get("poll_s") or 30)
+            # Report a change (pause, resume, intensity) or a start-up as soon as the server allows,
+            # so the dashboard confirms it in seconds instead of a full poll later.
+            reported = (payload.get("state"), payload.get("intensity"))
+            if (self.state, self.effective_intensity) != reported or self.state == "checking":
+                sleep_for = min(sleep_for, FAST_REPORT_S)
             if desired is None:
                 sleep_for = int(self.client.retry_delay)
             self.miner.restart_requested.wait(max(1, sleep_for))
@@ -515,7 +541,7 @@ class Agent:
             if only_ac and power_source() == "battery":
                 self.state = "paused_battery"
             elif self.miner.running():
-                self.state = "mining"
+                self.state = "mining" if self.miner.working else "checking"
             else:
                 self.state = "error"
                 self.last_error = self.miner.last_error or "miner is not running"
@@ -531,7 +557,7 @@ class Agent:
             "version": str(self.cfg.get("version", VERSION)),
             "label": str(self.cfg.get("label") or computer_name()),
             "state": current_state,
-            "tops": round(self.miner.tops_60s(), 3),
+            "tops": round(self.miner.tops_60s(), 3) if current_state == "mining" else 0.0,
             "shares_accepted": self.miner.accepted,
             "shares_rejected": self.miner.rejected,
             "uptime_s": int(time.monotonic() - self.started),

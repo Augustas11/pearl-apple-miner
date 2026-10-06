@@ -26,7 +26,7 @@ def main() -> int:
     with open(args.config, encoding="utf-8") as stream:
         config = json.load(stream)
     body = {
-        "version": "0.2.0-beta.16",
+        "version": "0.2.0-beta.17",
         "state": args.state,
         "uptime_s": 0,
         "label": label(),
