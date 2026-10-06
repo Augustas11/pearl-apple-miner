@@ -12,7 +12,11 @@ fail_plain() {
 }
 
 usage() {
-  fail_plain "Usage: install.sh --wallet <prl1...>"
+  fail_plain "Your wallet address is missing. Get your personal install line at https://pearl.malibu.tech"
+}
+
+bad_wallet() {
+  fail_plain "That doesn't look like a Pearl wallet address. Copy it again from your wallet, or get your install line at https://pearl.malibu.tech"
 }
 
 wallet=""
@@ -27,6 +31,8 @@ while [ "$#" -gt 0 ]; do
 done
 
 [ -n "$wallet" ] || usage
+# Accept addresses pasted in capitals or with stray spaces.
+wallet="$(printf '%s' "$wallet" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
 
 [ "$(uname -s)" = "Darwin" ] || fail_plain "This installer works on Apple Silicon Macs running macOS 14 or newer."
 [ "$(uname -m)" = "arm64" ] || fail_plain "This installer works on Apple Silicon Macs running macOS 14 or newer."
@@ -39,10 +45,10 @@ esac
 
 case "$wallet" in
   prl1*) ;;
-  *) fail_plain "The wallet address must start with prl1." ;;
+  *) bad_wallet ;;
 esac
-[ "${#wallet}" -ge 34 ] && [ "${#wallet}" -le 94 ] || fail_plain "The wallet address is not valid."
-case "$wallet" in *[!0-9a-z]*) fail_plain "The wallet address is not valid." ;; esac
+[ "${#wallet}" -ge 34 ] && [ "${#wallet}" -le 94 ] || bad_wallet
+case "$wallet" in *[!0-9a-z]*) bad_wallet ;; esac
 if [ -n "${PMK_RELEASE_URL:-}" ]; then
   RELEASE_URL="$PMK_RELEASE_URL"
 fi
@@ -65,10 +71,14 @@ trap cleanup_tmp EXIT HUP INT TERM
 archive="$tmp/release.tar.gz"
 case "$RELEASE_URL" in
   file://*) cp "${RELEASE_URL#file://}" "$archive" ;;
-  *) curl -fL --retry 3 --connect-timeout 10 -o "$archive" "$RELEASE_URL" ;;
+  *)
+    printf '%s\n' "Downloading the Malibu Pearl miner..."
+    curl -fsL --retry 3 --connect-timeout 10 -o "$archive" "$RELEASE_URL" \
+      || fail_plain "Couldn't download the miner. Check your internet connection and run the same line again."
+    ;;
 esac
 actual_sha="$(shasum -a 256 "$archive" | awk '{print $1}')"
-[ "$actual_sha" = "$RELEASE_SHA256" ] || fail_plain "The download did not pass verification."
+[ "$actual_sha" = "$RELEASE_SHA256" ] || fail_plain "The download was damaged on the way. Run the same line again."
 
 mkdir -p "$app_root" "$logs_root" "$agents_root"
 chmod 700 "$app_root" "$logs_root"
@@ -76,7 +86,33 @@ extract="$tmp/extract"
 mkdir -p "$extract"
 tar -xzf "$archive" -C "$extract"
 payload="$(find "$extract" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
-[ -n "$payload" ] || fail_plain "The download did not contain the miner package."
+[ -n "$payload" ] || fail_plain "The download was damaged on the way. Run the same line again."
+
+# Catch a typo in the wallet (bech32/bech32m checksum) before anything is installed.
+if ! "$payload/bin/python3" - "$wallet" <<'PY' >/dev/null 2>&1
+import sys
+CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
+def polymod(values):
+    gen = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3]
+    chk = 1
+    for v in values:
+        top = chk >> 25
+        chk = (chk & 0x1ffffff) << 5 ^ v
+        for i in range(5):
+            chk ^= gen[i] if ((top >> i) & 1) else 0
+    return chk
+addr = sys.argv[1]
+hrp, _, data = addr.rpartition("1")
+ok = hrp == "prl" and len(data) >= 6 and all(c in CHARSET for c in data)
+if ok:
+    values = [ord(c) >> 5 for c in hrp] + [0] + [ord(c) & 31 for c in hrp] + [CHARSET.find(c) for c in data]
+    ok = polymod(values) in (1, 0x2bc830a3)
+sys.exit(0 if ok else 1)
+PY
+then
+  rmdir "$app_root" "$logs_root" 2>/dev/null || true
+  fail_plain "That wallet address has a typo. Copy it again from your wallet, or get your install line at https://pearl.malibu.tech"
+fi
 
 version_dir="$app_root/$VERSION"
 rm -rf "$version_dir.tmp"
@@ -165,7 +201,7 @@ for name in ("PMK_TEST_FORCE_GPU_SECONDS", "PMK_TEST_FORCE_GPU_SHAPE"):
         environment[name] = os.environ[name]
 value = {"Label": "tech.malibu.pearl",
  "ProgramArguments": [app + "/current/bin/pearl-agent", "--config", app + "/config.json"],
- "RunAtLoad": True, "KeepAlive": {"Crashed": True},
+ "RunAtLoad": True, "KeepAlive": {"SuccessfulExit": False}, "ThrottleInterval": 10,
  "EnvironmentVariables": environment,
  "StandardOutPath": logs + "/agent.log", "StandardErrorPath": logs + "/agent.err.log",
  "WorkingDirectory": app + "/current"}
