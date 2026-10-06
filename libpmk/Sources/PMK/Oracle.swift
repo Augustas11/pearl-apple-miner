@@ -3,8 +3,10 @@ import Foundation
 public enum CPUOracle {
     public static let rank = 128
     public static let slotWords = 26
-    public static let rowsPattern = [0, 8, 16, 24]
-    public static let colsPattern = [0, 1, 8, 9, 16, 17, 24, 25]
+    public static let sgRowsPattern = [0, 8, 16, 24]
+    public static let sgColsPattern = [0, 1, 8, 9, 16, 17, 24, 25]
+    public static let naRowsPattern = [0, 8, 64, 72]
+    public static let naColsPattern = [0, 1, 2, 3, 16, 17, 18, 19, 32, 33, 34, 35, 48, 49, 50, 51]
 
     private static let iv: [UInt32] = [
         0x6A09E667, 0xBB67AE85, 0x3C6EF372, 0xA54FF53A,
@@ -25,13 +27,15 @@ public enum CPUOracle {
         key: [UInt32],
         block: [UInt32],
         share: [UInt32],
+        kernel: K3Kernel = .sg,
         blockCapacity: Int = Int.max,
         shareCapacity: Int = Int.max
     ) -> (block: [[UInt32]], share: [[UInt32]]) {
         precondition(m > 0 && n > 0 && k > 0)
-        precondition(k % rank == 0, "K3-SG oracle requires k % 128 == 0")
+        precondition(k % rank == 0, "K3 oracle requires k % 128 == 0")
         precondition(key.count == 8 && block.count == 8 && share.count == 8)
-        precondition(m % 32 == 0 && n % 32 == 0, "K3-SG pattern period is 32")
+        let rowsPattern = kernel.rowsPattern
+        let colsPattern = kernel.colsPattern
 
         let rowOrigins = validOffsets(for: rowsPattern, total: m)
         let colOrigins = validOffsets(for: colsPattern, total: n)
@@ -43,7 +47,9 @@ public enum CPUOracle {
 
         for rowOrigin in rowOrigins {
             for colOrigin in colOrigins {
-                let state = transcript(m: m, n: n, k: k, a: a, b: b, rowOrigin: rowOrigin, colOrigin: colOrigin)
+                let state = transcript(m: m, n: n, k: k, a: a, b: b,
+                                       rowOrigin: rowOrigin, colOrigin: colOrigin,
+                                       rowsPattern: rowsPattern, colsPattern: colsPattern)
                 let h = hash(words: state.transcript, key: key)
                 let slot = [UInt32(rowOrigin), UInt32(colOrigin)] + state.transcript + h
                 if lessEqual(h, block), blockSlots.count < blockCapacity {
@@ -73,7 +79,7 @@ public enum CPUOracle {
     }
 
     private struct TileState {
-        var acc = [Int32](repeating: 0, count: 32)
+        var acc: [Int32]
         var transcript = [UInt32](repeating: 0, count: 16)
     }
 
@@ -84,9 +90,12 @@ public enum CPUOracle {
         a: UnsafePointer<Int8>,
         b: UnsafePointer<Int8>,
         rowOrigin: Int,
-        colOrigin: Int
+        colOrigin: Int,
+        rowsPattern: [Int],
+        colsPattern: [Int]
     ) -> TileState {
-        var state = TileState()
+        var state = TileState(acc: [Int32](repeating: 0, count: rowsPattern.count * colsPattern.count))
+        let colsByDelta = Dictionary(uniqueKeysWithValues: colsPattern.enumerated().map { ($0.element, $0.offset) })
         for chunkStart in stride(from: 0, to: k, by: rank) {
             let transcriptIndex = (chunkStart / rank) & 15
             var x: UInt32 = 0
@@ -103,7 +112,7 @@ public enum CPUOracle {
                         ai += 1
                         bi += n
                     }
-                    let flat = rowSlot * 8 + columnPatternIndex(dc)
+                    let flat = rowSlot * colsPattern.count + colsByDelta[dc]!
                     state.acc[flat] &+= sum
                     x ^= UInt32(bitPattern: state.acc[flat])
                 }
@@ -160,20 +169,6 @@ public enum CPUOracle {
         let patternPeriod = shape[2].stride * shape[2].length
         precondition(total % patternPeriod == 0)
         return (0..<total).filter { offsetIsValid(shape, $0) }
-    }
-
-    private static func columnPatternIndex(_ colDelta: Int) -> Int {
-        switch colDelta {
-        case 0: return 0
-        case 1: return 1
-        case 8: return 2
-        case 9: return 3
-        case 16: return 4
-        case 17: return 5
-        case 24: return 6
-        case 25: return 7
-        default: preconditionFailure("invalid SG column pattern delta \(colDelta)")
-        }
     }
 
     private static func compress(block: [UInt32], chainingValue: [UInt32]) -> [UInt32] {

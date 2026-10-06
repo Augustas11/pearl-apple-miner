@@ -4,6 +4,8 @@ from __future__ import annotations
 import base64
 import ctypes as C
 import hashlib
+import json
+import os
 import pathlib
 import time
 from contextlib import contextmanager
@@ -90,10 +92,13 @@ _LIBPMK_ERRORS = {
     -104: 'GPU execution failed',
     -105: 'operation busy',
 }
-_CONTEXT_DIAGNOSTIC_FUNCTIONS = {'pmk_buffer_alloc', 'pmk_run_job', 'pmk_run_job_diagnostic'}
+_CONTEXT_DIAGNOSTIC_FUNCTIONS = {'pmk_buffer_alloc', 'pmk_run_job', 'pmk_run_job_na', 'pmk_run_job_diagnostic'}
 
 class Native:
-    def __init__(self, core=None, metal=None):
+    def __init__(self, core=None, metal=None, kernel=None):
+        if kernel is not None:
+            os.environ["PMK_KERNEL"] = str(kernel)
+        self.requested_v3_kernel = kernel
         self.core_path = pathlib.Path(core or ROOT/'pmkcore/target/release/libpmkcore.dylib')
         self.metal_path = pathlib.Path(metal or ROOT/'libpmk/.build/release/libpmk.dylib')
         self.core = C.CDLL(str(self.core_path))
@@ -126,6 +131,7 @@ class Native:
         }
         for name,args in declarations.items():
             fn=getattr(self.metal,name); fn.argtypes=args; fn.restype=C.c_int32
+        self._declare_optional_v3_symbols()
         self.metal.pmk_destroy.argtypes=[PTR]; self.metal.pmk_destroy.restype=None
         self.context=PTR(); self.buffers=[]
         error=C.create_string_buffer(4096)
@@ -133,6 +139,52 @@ class Native:
         key=C.create_string_buffer(128)
         self.call(self.metal.pmk_probe,self.context,key,len(key))
         self.probe_key=key.value.decode()
+
+    def _declare_optional(self, name, args):
+        try:
+            fn = getattr(self.metal, name)
+        except AttributeError:
+            return None
+        fn.argtypes = args
+        fn.restype = C.c_int32
+        return fn
+
+    def _declare_optional_v3_symbols(self):
+        self._declare_optional('pmk_run_job_na',[PTR,P(Desc),CALLBACK,PTR,P(PTR)])
+        self._declare_optional('pmk_v3_kernel_metadata',[PTR,PTR,U64])
+        self._declare_optional('pmk_kernel_metadata',[PTR,PTR,U64])
+
+    def v3_kernel_metadata(self):
+        for name in ('pmk_v3_kernel_metadata','pmk_kernel_metadata'):
+            fn = getattr(self.metal,name,None)
+            if fn is None:
+                continue
+            out = C.create_string_buffer(8192)
+            self.call(fn,self.context,out,len(out))
+            try:
+                return json.loads(out.value.decode('utf-8'))
+            except (UnicodeDecodeError,json.JSONDecodeError) as exc:
+                raise ValueError('malformed native v3 kernel metadata') from exc
+        return None
+
+    def validate_v3_kernel(self, scheme):
+        expected = getattr(scheme,'kernel_id','sg')
+        if expected == 'na' and not hasattr(self.metal,'pmk_run_job_na'):
+            raise ValueError('K3-NA requested but loaded libpmk exposes no pmk_run_job_na')
+        metadata = self.v3_kernel_metadata()
+        if metadata is None:
+            if expected == 'na':
+                raise ValueError('K3-NA requested but loaded libpmk exposes no kernel metadata')
+            return None
+        from .kernel import device_class_generation, metadata_kernel
+        actual = metadata_kernel(metadata)
+        if actual is not None and actual != expected:
+            raise ValueError(f"native v3 kernel mismatch: expected {expected}, got {actual}")
+        device_class = str(metadata.get('device_class',''))
+        generation = device_class_generation(device_class)
+        if expected == 'na' and generation is not None and generation < 10:
+            raise ValueError(f"K3-NA requires Apple10+, got {device_class}")
+        return metadata
 
     def _check_v4_library_admission(self, admission):
         if not isinstance(admission, dict):

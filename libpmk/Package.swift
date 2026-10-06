@@ -7,7 +7,7 @@ let package = Package(name: "libpmk", platforms: [.macOS(.v14)], products: [
 ], targets: [
     .target(name: "CPMK", path: "include", publicHeadersPath: "."),
     .target(name: "PMK", dependencies: ["CPMK"], path: ".", exclude: ["include", "tests", "tools", "README.md"],
-            sources: ["Sources/PMK"], resources: [.copy("metal"), .copy("resources/probe"), .copy("resources/v4_probe")]),
+            sources: ["Sources/PMK"], resources: [.copy("metal"), .copy("resources/probe"), .copy("resources/g3_na"), .copy("resources/v4_probe")]),
     .executableTarget(name: "PMKV4Diag", dependencies: ["PMK", "CPMK"], path: "tools",
                       sources: ["pmk_v4_diag.swift"]),
     .testTarget(name: "PMKTests", dependencies: ["PMK", "CPMK"], path: "tests/PMKTests",

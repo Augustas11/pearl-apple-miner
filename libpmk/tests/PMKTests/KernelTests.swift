@@ -6,15 +6,38 @@ import CPMK
 final class KernelTests: XCTestCase {
     func testK3SGBenchVectorsMatchOracleSlotsAndCounters() {
         do {
-            print("G3: initializing production context")
-            let context = try Context(requireAdmission: false)
-            print("G3: context ready")
-            for name in ["v1_256x256x4096", "v2_256x256x4096_pm127", "v3_128x128x65536", "v4_pearl_c64"] {
-                print("G3: loading \(name)")
-                let vector = try K3SGVector.load(name)
-                try runGPUCases(vector, context: context)
+            var admissionRecords: [[String: Any]] = []
+            for kernel in [K3Kernel.sg, K3Kernel.na] {
+                print("G3: initializing \(kernel.rawValue) production context")
+                let context = try Context(requireAdmission: false, kernelOverride: kernel)
+                print("G3: \(kernel.rawValue) context ready cache=\(context.cacheKey)")
+                var cases = 0
+                var mismatches = 0
+                for name in ["v1_256x256x4096", "v2_256x256x4096_pm127", "v3_128x128x65536", "v4_pearl_c64"] {
+                    print("G3: \(kernel.rawValue) loading \(name)")
+                    let vector = try K3SGVector.load(name, kernel: kernel)
+                    let result = try runGPUCases(vector, context: context, kernel: kernel)
+                    cases += result.cases
+                    mismatches += result.mismatches
+                    print("G3: PASS \(kernel.rawValue) \(name) \(result.cases) cases mismatches=\(result.mismatches)")
                 print("G3: PASS \(name) \(vector.cases.count) cases")
             }
+                XCTAssertEqual(mismatches, 0, "G3 \(kernel.rawValue) mismatches")
+                admissionRecords.append([
+                    "gpu_name": context.device.name,
+                    "device_class": context.deviceClass,
+                    "kernel": kernel.rawValue,
+                    "cache_key": context.cacheKey,
+                    "os_build": context.osBuild,
+                    "g3_passed": mismatches == 0,
+                    "last_probe_unix": Date().timeIntervalSince1970,
+                    "valid_hours": 24,
+                    "cases": cases,
+                    "mismatches": mismatches,
+                ])
+                print("G3: PASS kernel=\(kernel.rawValue) cases=\(cases) mismatches=\(mismatches)")
+            }
+            try writeAdmissionIfRequested(records: admissionRecords)
         } catch {
             XCTFail("G3: \(error)")
         }
@@ -22,7 +45,7 @@ final class KernelTests: XCTestCase {
 
     func testCPUOracleMatchesFullJobTilesForReleaseVectors() throws {
         for name in ["v1_256x256x4096", "v3_128x128x65536"] {
-            let vector = try K3SGVector.load(name)
+            let vector = try K3SGVector.load(name, kernel: .sg)
             vector.a.withUnsafeBytes { aRaw in
                 vector.b.withUnsafeBytes { bRaw in
                     guard let aBase = aRaw.baseAddress?.assumingMemoryBound(to: Int8.self),
@@ -36,7 +59,8 @@ final class KernelTests: XCTestCase {
                                                  a: aBase, b: bBase,
                                                  key: vector.key,
                                                  block: maxBlock,
-                                                 share: maxShare)
+                                                 share: maxShare,
+                                                 kernel: .sg)
                     for testCase in vector.cases {
                         XCTAssertEqual(oracle.block.filter { CPUOracle.lessEqual(Array($0[18..<26]), testCase.boundBlock) },
                                        vector.expectedSlots(bound: testCase.boundBlock),
@@ -72,11 +96,11 @@ final class KernelTests: XCTestCase {
         XCTAssertTrue(String(cString: error).contains("command buffer status"))
     }
 
-    private func runGPUCases(_ vector: K3SGVector, context: Context) throws {
+    private func runGPUCases(_ vector: K3SGVector, context: Context, kernel: K3Kernel) throws -> (cases: Int, mismatches: Int) {
         guard let rawA = context.device.makeBuffer(length: vector.a.count, options: .storageModeShared),
               let rawBt = context.device.makeBuffer(length: vector.b.count, options: .storageModeShared) else {
             XCTFail("could not allocate raw vector buffers for \(vector.name)")
-            return
+            return (0, 1)
         }
         vector.a.withUnsafeBytes { raw in
             _ = memcpy(rawA.contents(), raw.baseAddress!, vector.a.count)
@@ -85,6 +109,7 @@ final class KernelTests: XCTestCase {
             _ = memcpy(rawBt.contents(), raw.baseAddress!, vector.b.count)
         }
 
+        var mismatches = 0
         for testCase in vector.cases {
             var desc = pmk_job_desc()
             desc.abi_version = 1
@@ -110,7 +135,7 @@ final class KernelTests: XCTestCase {
             _ = memcpy(job.b.contents(), rawBt.contents(), vector.b.count)
             guard let commandBuffer = context.queue.makeCommandBuffer() else {
                 XCTFail("could not allocate command buffer for \(vector.name) \(testCase.name)")
-                return
+                return (vector.cases.count, mismatches + 1)
             }
             try job.encodeK3(commandBuffer)
             try syncComplete(commandBuffer)
@@ -118,18 +143,21 @@ final class KernelTests: XCTestCase {
             let counters = readU32(job.ctr, count: 2)
             let expectedBlocks = vector.expectedSlots(bound: testCase.boundBlock)
             let expectedShares = vector.expectedSlots(bound: testCase.boundShare)
-            XCTAssertEqual(counters[0], UInt32(expectedBlocks.count), "\(vector.name) \(testCase.name) block counter")
-            XCTAssertEqual(counters[1], UInt32(expectedShares.count), "\(vector.name) \(testCase.name) share counter")
+            if counters[0] != UInt32(expectedBlocks.count) { mismatches += 1 }
+            if counters[1] != UInt32(expectedShares.count) { mismatches += 1 }
+            XCTAssertEqual(counters[0], UInt32(expectedBlocks.count), "\(kernel.rawValue) \(vector.name) \(testCase.name) block counter")
+            XCTAssertEqual(counters[1], UInt32(expectedShares.count), "\(kernel.rawValue) \(vector.name) \(testCase.name) share counter")
 
             try assertStoredSlots(buffer: job.blocks, capacity: testCase.capBlock, counter: Int(counters[0]),
-                                  expected: expectedBlocks, label: "\(vector.name) \(testCase.name) block")
+                                  expected: expectedBlocks, label: "\(kernel.rawValue) \(vector.name) \(testCase.name) block")
             try assertStoredSlots(buffer: job.shares, capacity: testCase.capShare, counter: Int(counters[1]),
-                                  expected: expectedShares, label: "\(vector.name) \(testCase.name) share")
+                                  expected: expectedShares, label: "\(kernel.rawValue) \(vector.name) \(testCase.name) share")
         }
+        return (vector.cases.count, mismatches)
     }
 
     private func makeVectorJob() throws -> (Job, Context) {
-        let context = try Context(requireAdmission: false)
+        let context = try Context(requireAdmission: false, kernelOverride: .sg)
         let m = 64, n = 64, k = 2048
         let rawBytes = m * k
         let btBytes = n * k
@@ -166,6 +194,7 @@ final class KernelTests: XCTestCase {
         let stored = min(counter, capacity)
         let expectedByXY = Dictionary(uniqueKeysWithValues: expected.map { (slotXY($0), $0) })
         var actual: [[UInt32]] = []
+        var errors: [String] = []
         for slot in 0..<stored {
             let start = slot * slotWords
             actual.append(Array(words[start..<(start + slotWords)]))
@@ -173,18 +202,31 @@ final class KernelTests: XCTestCase {
         var seen = Set<[UInt32]>()
         for (index, slot) in actual.enumerated() {
             let xy = slotXY(slot)
-            XCTAssertTrue(seen.insert(xy).inserted, "\(label) duplicate stored slot \(index) at \(xy)")
-            XCTAssertEqual(slot, expectedByXY[xy], "\(label) stored slot \(index) \(xy)")
+            if !seen.insert(xy).inserted {
+                errors.append("\(label) duplicate stored slot \(index) at \(xy)")
+            }
+            if slot != expectedByXY[xy] {
+                errors.append("\(label) stored slot \(index) \(xy)")
+            }
         }
         if counter <= capacity {
-            XCTAssertEqual(seen, Set(expected.map(slotXY)), "\(label) complete non-overflow slot set")
+            if seen != Set(expected.map(slotXY)) {
+                errors.append("\(label) complete non-overflow slot set mismatch")
+            }
         } else {
-            XCTAssertTrue(seen.isSubset(of: Set(expected.map(slotXY))), "\(label) overflow slot subset")
+            if !seen.isSubset(of: Set(expected.map(slotXY))) {
+                errors.append("\(label) overflow slot subset mismatch")
+            }
         }
 
         let guardStart = capacity * slotWords
         let guardEnd = guardStart + guardWords
-        XCTAssertTrue(words[guardStart..<guardEnd].allSatisfy { $0 == canary }, "\(label) guard canary")
+        if !words[guardStart..<guardEnd].allSatisfy({ $0 == canary }) {
+            errors.append("\(label) guard canary mismatch")
+        }
+        if !errors.isEmpty {
+            throw PMKError(errors.prefix(8).joined(separator: "; "))
+        }
     }
 }
 
@@ -207,7 +249,7 @@ private struct K3SGVector {
     let b: Data
     let tiles: [[UInt32]]
 
-    static func load(_ name: String) throws -> K3SGVector {
+    static func load(_ name: String, kernel: K3Kernel) throws -> K3SGVector {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -223,8 +265,14 @@ private struct K3SGVector {
         let m = try int(job, "m")
         let n = try int(job, "n")
         let k = try int(job, "k")
-        let tileWords = try readU32File(dir.appendingPathComponent("tiles.bin"))
-        let tileCount = m * n / 32
+        let tileURL: URL
+        if kernel == .na {
+            tileURL = try pmkResourceURL("g3_na/\(name)/tiles_na.bin")
+        } else {
+            tileURL = dir.appendingPathComponent("tiles.bin")
+        }
+        let tileWords = try readU32File(tileURL)
+        let tileCount = m * n / Int(kernel.tileElements)
         guard tileWords.count == tileCount * slotWords else {
             throw PMKError("\(name) tiles.bin word count \(tileWords.count) != \(tileCount * slotWords)")
         }
@@ -311,4 +359,22 @@ private func u32Array(_ value: Any?, label: String) throws -> [UInt32] {
 private func tuple8(_ words: [UInt32]) -> (UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32, UInt32) {
     precondition(words.count == 8)
     return (words[0], words[1], words[2], words[3], words[4], words[5], words[6], words[7])
+}
+
+private func writeAdmissionIfRequested(records: [[String: Any]]) throws {
+    let root: [String: Any] = [
+        "schema": "pmk-g3-admission-v1",
+        "devices": records,
+    ]
+    // The packaged helper is consumed as JSON Lines; keep the combined
+    // kernel-keyed admission on one line so the quick-start parser selects it.
+    let data = try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys])
+    if ProcessInfo.processInfo.environment["PMK_B4_ROOT"] != nil {
+        print(String(data: data, encoding: .utf8)!)
+    }
+    guard let path = ProcessInfo.processInfo.environment["PMK_G3_ADMISSION_OUTPUT"], !path.isEmpty else {
+        return
+    }
+    try data.write(to: URL(fileURLWithPath: path), options: .atomic)
+    print("G3: wrote kernel-keyed admission \(path)")
 }

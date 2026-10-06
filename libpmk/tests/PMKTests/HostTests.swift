@@ -14,6 +14,7 @@ final class HostTests: XCTestCase {
         XCTAssertEqual(pmkJobRelease(nil), Int32(PMK_INVALID))
         XCTAssertEqual(pmkProbe(nil, nil, 0), Int32(PMK_INVALID))
         XCTAssertEqual(pmkProbeRefresh(nil, nil, 0), Int32(PMK_INVALID))
+        XCTAssertEqual(pmkV3KernelMetadata(nil, nil, 0), Int32(PMK_INVALID))
     }
 
     func testCallbackBarrierDrainsReturnAndRejectsCallbackThreadWait() {
@@ -53,7 +54,7 @@ final class HostTests: XCTestCase {
     }
 
     func testG3AdmissionRequiresFreshDeviceClassRecord() throws {
-        XCTAssertFalse(requiresG3Admission(deviceClass: "Apple10"))
+        XCTAssertTrue(requiresG3Admission(deviceClass: "Apple10"))
         XCTAssertTrue(requiresG3Admission(deviceClass: "Apple9"))
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -61,7 +62,7 @@ final class HostTests: XCTestCase {
         let file = dir.appendingPathComponent("g3-admission.json")
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let json = """
-        {"devices":[{"gpu_name":"Apple M3 Ultra","device_class":"Apple9","cache_key":"abc","os_build":"26A1","g3_passed":true,"last_probe_unix":1799999900}]}
+        {"devices":[{"gpu_name":"Apple M3 Ultra","device_class":"Apple9","kernel":"sg","cache_key":"abc","os_build":"26A1","g3_passed":true,"last_probe_unix":1799999900}]}
         """
         try json.write(to: file, atomically: true, encoding: .utf8)
         XCTAssertNoThrow(try requireG3Admission(deviceName: "Apple M3 Ultra", deviceClass: "Apple9",
@@ -77,8 +78,11 @@ final class HostTests: XCTestCase {
         XCTAssertThrowsError(try requireG3Admission(deviceName: "Apple M3 Ultra", deviceClass: "Apple9",
                                                     cacheKey: "abc", osBuild: "26A2", now: now,
                                                     path: file.path))
+        XCTAssertThrowsError(try requireG3Admission(deviceName: "Apple M3 Ultra", deviceClass: "Apple9",
+                                                    kernel: .na, cacheKey: "abc", osBuild: "26A1",
+                                                    now: now, path: file.path))
         try """
-        {"devices":[{"gpu_name":"Apple M3 Ultra","device_class":"Apple9","cache_key":"abc","os_build":"26A1","g3_passed":true,"last_probe_unix":1799999900,"valid_hours":24}]}
+        {"devices":[{"gpu_name":"Apple M3 Ultra","device_class":"Apple9","kernel":"sg","cache_key":"abc","os_build":"26A1","g3_passed":true,"last_probe_unix":1799999900,"valid_hours":24}]}
         """.write(to: file, atomically: true, encoding: .utf8)
         XCTAssertThrowsError(try requireG3Admission(deviceName: "Apple M3 Ultra", deviceClass: "Apple9",
                                                     cacheKey: "abc", osBuild: "26A1",
@@ -88,13 +92,13 @@ final class HostTests: XCTestCase {
                                                     cacheKey: "abc", osBuild: "26A1", now: now,
                                                     path: file.path))
         try """
-        {"devices":[{"gpu_name":"Apple M3 Ultra","device_class":"Apple9","cache_key":"abc","os_build":"26A1","g3_passed":true,"last_probe_unix":1800000100,"valid_hours":24}]}
+        {"devices":[{"gpu_name":"Apple M3 Ultra","device_class":"Apple9","kernel":"sg","cache_key":"abc","os_build":"26A1","g3_passed":true,"last_probe_unix":1800000100,"valid_hours":24}]}
         """.write(to: file, atomically: true, encoding: .utf8)
         XCTAssertThrowsError(try requireG3Admission(deviceName: "Apple M3 Ultra", deviceClass: "Apple9",
                                                     cacheKey: "abc", osBuild: "26A1", now: now,
                                                     path: file.path))
         try """
-        {"devices":[{"gpu_name":"Apple M3 Ultra","device_class":"Apple9","cache_key":"abc","os_build":"26A1","g3_passed":true,"last_probe_unix":1799999900,"valid_hours":0}]}
+        {"devices":[{"gpu_name":"Apple M3 Ultra","device_class":"Apple9","kernel":"sg","cache_key":"abc","os_build":"26A1","g3_passed":true,"last_probe_unix":1799999900,"valid_hours":0}]}
         """.write(to: file, atomically: true, encoding: .utf8)
         XCTAssertThrowsError(try requireG3Admission(deviceName: "Apple M3 Ultra", deviceClass: "Apple9",
                                                     cacheKey: "abc", osBuild: "26A1", now: now,

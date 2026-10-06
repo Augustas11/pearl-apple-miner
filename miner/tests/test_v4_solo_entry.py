@@ -3,6 +3,7 @@
 """Replay a captured regtest job through the real CLI, native core, and GPU."""
 from __future__ import annotations
 
+import ctypes as C
 import json
 import os
 from pathlib import Path
@@ -18,13 +19,33 @@ from pmk_miner.v4_admission import V4_G3_ADMISSION_ENV
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = Path(__file__).parent / 'fixtures/v4_regtest_gateway_job.json'
-ADMISSION = Path.home() / '.pmk/v4-g3-admission.json'
+LIBPMK = ROOT / 'libpmk/.build/release/libpmk.dylib'
 PAYOUT = '51202d6c74a5d8af133f1c65c0a9f99c433498dc807dce022e559c60a3a70e0223ea'
 ADDRESS = 'rprl1p94k8ffwc4ufn78r9cz5ln8zrxjvdeqraecpzu4vuvz36wrszy04qtcg0d2'
 
 
+def write_test_admission(path: Path) -> None:
+    """Create an exact-binary/device fixture without reading operator state."""
+    lib = C.CDLL(str(LIBPMK))
+    ptr, u64 = C.c_void_p, C.c_uint64
+    lib.pmk_v4_init_diagnostic.argtypes = [C.POINTER(ptr), ptr, u64]
+    lib.pmk_v4_init_diagnostic.restype = C.c_int32
+    lib.pmk_v4_write_admission_record.argtypes = [ptr, C.c_char_p, u64, ptr, u64]
+    lib.pmk_v4_write_admission_record.restype = C.c_int32
+    lib.pmk_v4_destroy.argtypes = [ptr]
+    context, error = ptr(), C.create_string_buffer(4096)
+    assert lib.pmk_v4_init_diagnostic(C.byref(context), error, len(error)) == 0, error.value
+    try:
+        assert lib.pmk_v4_write_admission_record(
+            context, os.fsencode(path), 100_000_000, error, len(error)) == 0, error.value
+    finally:
+        lib.pmk_v4_destroy(context)
+
+
 @pytest.mark.parametrize('admission_mode', ['config', 'environment', 'missing'])
-def test_real_solo_entry_dispatches_captured_v4_job_with_config_admission(tmp_path, monkeypatch, admission_mode):
+def test_real_solo_entry_dispatches_captured_v4_job_with_config_admission(
+    tmp_path, monkeypatch, admission_mode, v3_g3_admission
+):
     # Only the remote gateway is replayed. No miner, verifier, admission, or GPU
     # implementation is replaced. The full node acceptance gate is the regtest E2E.
     fixture = json.loads(FIXTURE.read_text())
@@ -39,9 +60,8 @@ def test_real_solo_entry_dispatches_captured_v4_job_with_config_admission(tmp_pa
             self.wfile.write((json.dumps({'jsonrpc': '2.0', 'id': request['id'],
                                          'result': fixture}) + '\n').encode())
 
-    # Read the real admission record, preserving its hardware/hash/freshness gate.
-    admission_source = Path(os.environ.get(V4_G3_ADMISSION_ENV, ADMISSION))
-    (tmp_path / 'admission.json').write_bytes(admission_source.read_bytes())
+    # Generate an isolated exact-device/library record; never consume ~/.pmk.
+    write_test_admission(tmp_path / 'admission.json')
     monkeypatch.delenv(V4_G3_ADMISSION_ENV, raising=False)
     if admission_mode == 'environment':
         monkeypatch.setenv(V4_G3_ADMISSION_ENV, str(tmp_path / 'admission.json'))

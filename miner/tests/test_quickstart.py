@@ -65,6 +65,12 @@ def test_base_mac_job_fits_existing_memory_budget():
     assert quickstart.choose_shape(32 * 1024**3).m == 4096
 
 
+def test_explicit_shape_override_is_validated_against_memory():
+    assert quickstart.requested_shape('2048', 8 * 1024**3, 8).m == 2048
+    with pytest.raises(ValueError):
+        quickstart.requested_shape('8192', 8 * 1024**3, 80)
+
+
 @pytest.mark.parametrize('last_probe,valid_hours,passed,expected', [
     (100_000, 6, True, True),
     (100_001, 6, True, False),
@@ -103,6 +109,7 @@ def test_mining_wrapper_passes_desktop_and_watchdog_flags(monkeypatch, tmp_path)
     from pmk_miner import pool
     calls = []
     monkeypatch.delenv('PMK_V4_G3_ADMISSION_FILE', raising=False)
+    monkeypatch.delenv('PMK_G3_ADMISSION_FILE', raising=False)
     monkeypatch.setenv('PMK_HOME', str(tmp_path / 'state'))
     monkeypatch.setattr(quickstart, 'worker_name', lambda: 'test-mac')
     monkeypatch.setattr(quickstart, 'gpu_core_count', lambda: 8)
@@ -121,8 +128,10 @@ def test_mining_wrapper_passes_desktop_and_watchdog_flags(monkeypatch, tmp_path)
     assert forwarded[forwarded.index('--pool-silence-timeout') + 1] == '90.0'
     assert forwarded[forwarded.index('--on-battery') + 1] == 'run'
     assert forwarded[forwarded.index('--intensity') + 1] == '60'
+    assert forwarded[forwarded.index('--kernel') + 1] == 'auto'
     state = tmp_path / 'state'
     v4_admission = state / 'v4-g3-admission.json'
     config = (state / 'pool.toml').read_text()
     assert f'[v4]\nadmission_file = "{v4_admission}"' in config
     assert 'PMK_V4_G3_ADMISSION_FILE' not in quickstart.os.environ
+    assert 'PMK_G3_ADMISSION_FILE' not in quickstart.os.environ

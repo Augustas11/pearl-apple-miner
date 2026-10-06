@@ -47,6 +47,7 @@ def test_stop_cancels_long_lived_submission_trackers():
 
 
 def setup_miner(monkeypatch, tmp_path, outcomes, *, lose_ack=False):
+    monkeypatch.setenv('PMK_DEVICE_CLASS', 'Apple9')
     header = (1).to_bytes(4, 'little') + bytes(64) + (1).to_bytes(4, 'little') + (0x177fd82e).to_bytes(4, 'little')
     job = GatewayJob(header, bits_to_target(0x177fd82e), 3)
     log = tmp_path / 'gateway.log'
@@ -98,7 +99,8 @@ def setup_miner(monkeypatch, tmp_path, outcomes, *, lose_ack=False):
     monkeypatch.setattr(cli.Shape, 'validate', lambda *a, **kw: 1)
     monkeypatch.setattr(cli.Shape, 'memory_estimate', lambda *a, **kw: 1)
     monkeypatch.setattr(cli, 'log', lambda *a, **kw: None)
-    return job, config, calls, SimpleNamespace(gateway='localhost:1', config=tmp_path/'config')
+    return job, config, calls, SimpleNamespace(
+        gateway='localhost:1', config=tmp_path/'config', kernel='sg')
 
 
 def test_restart_confirms_outstanding_before_dispatch_and_never_resubmits(monkeypatch, tmp_path):

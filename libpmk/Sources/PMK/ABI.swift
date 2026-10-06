@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: Apache-2.0
 import Foundation
 import Metal
 import CPMK
@@ -97,6 +96,15 @@ public func pmkRunJob(_ handle: UnsafeMutableRawPointer?, _ descriptor: UnsafePo
     runJob(handle, descriptor, callback, user, out, diagnostic: false)
 }
 
+@_cdecl("pmk_run_job_na")
+public func pmkRunJobNA(_ handle: UnsafeMutableRawPointer?, _ descriptor: UnsafePointer<pmk_job_desc>?,
+                        _ callback: (@convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer?) -> Void)?,
+                        _ user: UnsafeMutableRawPointer?, _ out: UnsafeMutablePointer<UnsafeMutableRawPointer?>?) -> Int32 {
+    guard let handle else { return Int32(PMK_INVALID) }
+    guard context(handle).kernel == .na else { return Int32(PMK_INVALID) }
+    return runJob(handle, descriptor, callback, user, out, diagnostic: false)
+}
+
 @_cdecl("pmk_run_job_diagnostic")
 public func pmkRunJobDiagnostic(_ handle: UnsafeMutableRawPointer?, _ descriptor: UnsafePointer<pmk_job_desc>?,
                                 _ callback: (@convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer?) -> Void)?,
@@ -104,19 +112,39 @@ public func pmkRunJobDiagnostic(_ handle: UnsafeMutableRawPointer?, _ descriptor
     runJob(handle, descriptor, callback, user, out, diagnostic: true)
 }
 
+@_cdecl("pmk_v3_kernel_metadata")
+public func pmkV3KernelMetadata(_ handle: UnsafeMutableRawPointer?, _ out: UnsafeMutablePointer<CChar>?, _ capacity: UInt64) -> Int32 {
+    guard let handle else { return Int32(PMK_INVALID) }
+    let c = context(handle)
+    c.lock.lock()
+    let json = """
+    {"kernel":"\(c.kernel.rawValue)","function":"\(c.kernel.functionName)","pattern_id":\(c.kernel.patternId),"device_class":"\(c.deviceClass)","device_name":\(jsonString(c.device.name)),"cache_key":\(jsonString(c.cacheKey)),"os_build":\(jsonString(c.osBuild)),"tile_m":\(c.kernel.tileM),"tile_n":\(c.kernel.tileN)}
+    """
+    c.lock.unlock()
+    putString(json, out, capacity)
+    return 0
+}
+
+@_cdecl("pmk_kernel_metadata")
+public func pmkKernelMetadata(_ handle: UnsafeMutableRawPointer?, _ out: UnsafeMutablePointer<CChar>?, _ capacity: UInt64) -> Int32 {
+    pmkV3KernelMetadata(handle, out, capacity)
+}
+
 private func runJob(_ handle: UnsafeMutableRawPointer?, _ descriptor: UnsafePointer<pmk_job_desc>?,
                     _ callback: (@convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer?) -> Void)?,
                     _ user: UnsafeMutableRawPointer?, _ out: UnsafeMutablePointer<UnsafeMutableRawPointer?>?,
                     diagnostic: Bool) -> Int32 {
     guard let handle, let descriptor, let out else { return Int32(PMK_INVALID) }; out.pointee = nil
+    let c = context(handle)
     let d = descriptor.pointee
     let maxK: UInt32 = diagnostic ? 65_536 : 8_192
     guard d.abi_version == 1, d.cert_version == 3, d.rank == 128,
            d.m >= 64, d.n >= 64, d.m < (1 << 24), d.n < (1 << 24),
-           d.m % 64 == 0, d.n % 64 == 0, d.k >= 2048, d.k <= maxK, d.k % 128 == 0,
+           d.m % UInt32(c.kernel.tileM) == 0, d.n % UInt32(c.kernel.tileN) == 0,
+           d.k >= 2048, d.k <= maxK, d.k % 128 == 0,
            d.block_capacity >= 4, d.share_capacity >= 64, let ap = d.a, let bp = d.bt else { return Int32(PMK_INVALID) }
     let na = UInt64(d.m) * UInt64(d.k), nb = UInt64(d.n) * UInt64(d.k)
-    let tiles = UInt64(d.m) * UInt64(d.n) / 32
+    let tiles = UInt64(d.m) * UInt64(d.n) / c.kernel.tileElements
     let slotBytes = (UInt64(d.block_capacity) + UInt64(d.share_capacity)) * 104 + UInt64(guardWords * 8)
     guard na < UInt64(maxBufferBytes), nb < UInt64(maxBufferBytes), d.a_bytes >= na, d.bt_bytes >= nb,
            tiles <= UInt64(UInt32.max), UInt64(d.block_capacity) * 104 + UInt64(guardWords * 4) < UInt64(maxBufferBytes),
@@ -128,7 +156,7 @@ private func runJob(_ handle: UnsafeMutableRawPointer?, _ descriptor: UnsafePoin
     let recovery = needsRecovery ? recoveryTiles * 768 + na + nb + UInt64(d.m + d.n) * 128 + UInt64(d.k) * 32 : 0
     let reservation = na + nb + UInt64(d.m + d.n) * 128 + UInt64(d.k) * 16 + slotBytes + recovery + 24
     let profile = JobProfile(enabled: false, splitCommandBuffers: false)
-    let c = context(handle); c.lock.lock()
+    c.lock.lock()
     c.recordDiagnostic("")
     let reserveStart = monotonicNow()
     do {

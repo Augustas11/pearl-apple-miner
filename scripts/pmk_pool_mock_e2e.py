@@ -25,7 +25,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 PYTHON = ROOT / ".venv/bin/python"
 DIFF1_TARGET = 0xFFFF << 208
-DEFAULT_WALLET = "prl1mockpoolwallet000000000000000000000000000000000000000000"
+DEFAULT_WALLET = "prl1pmockpoolwallet000000000000000000000000000000000000000000"
 
 
 def secure_dir(path: Path) -> None:
@@ -451,7 +451,7 @@ def make_run_root(parent: Path | None) -> Path:
     return run
 
 
-def make_config(path: Path, *, state_dir: Path, summary_file: Path, max_accepted: int, max_jobs: int, max_seconds: int, difficulty_floor: int, m: int, n: int, k: int, slots: int) -> None:
+def make_config(path: Path, *, state_dir: Path, summary_file: Path, max_accepted: int, max_jobs: int, max_seconds: int, difficulty_floor: int, m: int, n: int, k: int, slots: int, kernel: str = "auto") -> None:
     write_text(
         path,
         f"""m = {m}
@@ -464,6 +464,7 @@ max_accepted = {max_accepted}
 max_jobs = {max_jobs}
 max_seconds = {max_seconds}
 state_dir = "{state_dir}"
+kernel = "{kernel}"
 
 [pool]
 difficulty_floor = {difficulty_floor}
@@ -472,8 +473,8 @@ summary_file = "{summary_file}"
     )
 
 
-def miner_command(pool_url: str, wallet_file: Path, allowlist: Path, worker: str, config: Path) -> list[str]:
-    return [
+def miner_command(pool_url: str, wallet_file: Path, allowlist: Path, worker: str, config: Path, kernel: str) -> list[str]:
+    cmd = [
         str(PYTHON),
         "-m",
         "pmk_miner",
@@ -490,6 +491,9 @@ def miner_command(pool_url: str, wallet_file: Path, allowlist: Path, worker: str
         "--config",
         str(config),
     ]
+    if kernel != "auto":
+        cmd.extend(["--kernel", kernel])
+    return cmd
 
 
 def parse_json_events(path: Path) -> list[dict[str, Any]]:
@@ -518,28 +522,34 @@ def bound_trace_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return trace
 
 
-def terminate(process: subprocess.Popen[str]) -> None:
-    def signal_miner(signum: int) -> None:
-        try:
-            os.killpg(process.pid, signum)
-        except ProcessLookupError:
-            pass
-        except PermissionError:
-            # The miner can exit between poll() and killpg(). Do not pursue a
-            # group we cannot signal; the Popen handle still identifies our child.
-            if process.poll() is None:
-                process.send_signal(signum)
+def signal_process_group(process: subprocess.Popen[str], sig: signal.Signals) -> None:
+    try:
+        pgid = os.getpgid(process.pid)
+    except ProcessLookupError:
+        return
+    try:
+        os.killpg(pgid, sig)
+        return
+    except ProcessLookupError:
+        return
+    except PermissionError:
+        pass
+    try:
+        process.send_signal(sig)
+    except (ProcessLookupError, PermissionError):
+        pass
 
-    signal_miner(signal.SIGTERM)
+
+def terminate(process: subprocess.Popen[str]) -> None:
+    signal_process_group(process, signal.SIGTERM)
     deadline = time.time() + 10
     while process.poll() is None and time.time() < deadline:
         time.sleep(0.1)
-    # The direct miner may have exited while leaving a worker in its group.
-    signal_miner(signal.SIGKILL)
+    signal_process_group(process, signal.SIGKILL)
     try:
         process.wait(timeout=2)
     except subprocess.TimeoutExpired:
-        signal_miner(signal.SIGKILL)
+        signal_process_group(process, signal.SIGKILL)
         process.wait(timeout=2)
 
 
@@ -575,13 +585,14 @@ async def run_miner_case(args: argparse.Namespace, *, reject_first: bool = False
         n=args.n,
         k=args.k,
         slots=args.slots,
+        kernel=args.kernel,
     )
     env = os.environ.copy()
     env["PYTHONPATH"] = f"{ROOT / 'miner'}{os.pathsep}{env.get('PYTHONPATH', '')}".rstrip(os.pathsep)
     env.pop("PMK_GPU_LOCK_HELD", None)
     proc: subprocess.Popen[str] | None = None
     try:
-        cmd = miner_command(pool.url(), wallet_file, allowlist, args.worker, config)
+        cmd = miner_command(pool.url(), wallet_file, allowlist, args.worker, config, args.kernel)
         with miner_log.open("w", encoding="utf-8") as stream:
             proc = subprocess.Popen(cmd, cwd=ROOT, env=env, stdout=stream, stderr=subprocess.STDOUT, text=True, start_new_session=True)
         deadline = time.time() + args.max_seconds + 45
@@ -618,6 +629,7 @@ async def run_miner_case(args: argparse.Namespace, *, reject_first: bool = False
                 "height": job.height,
                 "cert_version": job.cert_version,
                 "shape": {"m": args.m, "n": args.n, "k": args.k, "slots": args.slots},
+                "kernel": args.kernel,
             },
             "pool": {
                 "accepted": pool.stats.accepted,
@@ -812,6 +824,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--n", type=int, default=int(os.environ.get("PMK_POOL_T1_N", "4096")))
     parser.add_argument("--k", type=int, default=int(os.environ.get("PMK_POOL_T1_K", "4096")))
     parser.add_argument("--slots", type=int, default=int(os.environ.get("PMK_POOL_T1_SLOTS", "2")))
+    parser.add_argument("--kernel", choices=("auto", "sg", "na"), default=os.environ.get("PMK_KERNEL", "auto"),
+                        help="miner kernel override for cert-v3 pool runs")
     args = parser.parse_args()
     if args.dispatch_only and args.target_completed_jobs <= 0:
         parser.error("--dispatch-only requires --target-completed-jobs > 0")

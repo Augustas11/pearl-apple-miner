@@ -135,32 +135,46 @@ def start_proc(name: str, args: list[str], log_path: Path, *, env: dict[str, str
     return Proc(name, process, log_path)
 
 
+def signal_proc_group(proc: Proc, sig: signal.Signals) -> None:
+    try:
+        pgid = os.getpgid(proc.process.pid)
+    except ProcessLookupError:
+        return
+    try:
+        os.killpg(pgid, sig)
+        return
+    except ProcessLookupError:
+        return
+    except PermissionError:
+        pass
+    try:
+        proc.process.send_signal(sig)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
 def stop_all(procs: list[Proc]) -> None:
     for proc in reversed(procs):
-        try:
-            # The group may still contain gateway workers after its direct
-            # launcher exits, so group cleanup must not depend on poll().
-            os.killpg(proc.process.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
+        # The group may still contain gateway workers after its direct
+        # launcher exits, so group cleanup must not depend on poll().
+        signal_proc_group(proc, signal.SIGTERM)
     deadline = time.time() + 8
     for proc in reversed(procs):
         while proc.process.poll() is None and time.time() < deadline:
             time.sleep(0.1)
+    lingering: list[str] = []
     for proc in reversed(procs):
-        try:
-            os.killpg(proc.process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-    for proc in procs:
+        signal_proc_group(proc, signal.SIGKILL)
         try:
             proc.process.wait(timeout=2)
         except subprocess.TimeoutExpired:
+            signal_proc_group(proc, signal.SIGKILL)
             try:
-                os.killpg(proc.process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            proc.process.wait(timeout=2)
+                proc.process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                lingering.append(f"{proc.name}:{proc.process.pid}")
+    if lingering:
+        raise RuntimeError(f"regtest child processes remained alive after cleanup: {', '.join(lingering)}")
 
 
 def assert_alive(procs: list[Proc], *, allow_success: set[str] | None = None, secrets_to_hide: list[str] | tuple[str, ...] = ()) -> None:
@@ -482,6 +496,7 @@ def make_config(
     env_file: Path,
     target: int,
     m: int = 128, n: int = 128, k: int = 4096, slots: int = 2,
+    kernel: str = "auto",
 ) -> None:
     write_text(
         path,
@@ -508,6 +523,7 @@ script = "{taproot_script_for_address(MINING_ADDR)}"
 max_accepted = {target}
 stop_after_cert_rejection = true
 state_dir = "{path.parent / "state"}"
+kernel = "{kernel}"
 """,
     )
 
@@ -529,8 +545,8 @@ def gateway_cmd(run: Path) -> list[str]:
     ]
 
 
-def miner_cmd(config: Path, gw_port: int) -> list[str]:
-    return [
+def miner_cmd(config: Path, gw_port: int, kernel: str) -> list[str]:
+    cmd = [
         str(PYTHON),
         "-m",
         "pmk_miner",
@@ -541,6 +557,9 @@ def miner_cmd(config: Path, gw_port: int) -> list[str]:
         "--config",
         str(config),
     ]
+    if kernel != "auto":
+        cmd.extend(["--kernel", kernel])
+    return cmd
 
 
 def main() -> int:
@@ -551,6 +570,8 @@ def main() -> int:
         parser.add_argument(f"--{name}", type=int, default=default)
     parser.add_argument("--run-root", type=Path, default=None)
     parser.add_argument("--keep-run", action="store_true", help="preserve sanitized runtime files for debugging")
+    parser.add_argument("--kernel", choices=("auto", "sg", "na"), default=os.environ.get("PMK_KERNEL", "auto"),
+                        help="miner kernel override for cert-v3 runs")
     args = parser.parse_args()
 
     if not PEARLD.exists():
@@ -602,6 +623,7 @@ def main() -> int:
         env_file=env_file,
         target=args.target_new_blocks,
         m=args.m, n=args.n, k=args.k, slots=args.slots,
+        kernel=args.kernel,
     )
 
     procs: list[Proc] = []
@@ -612,6 +634,7 @@ def main() -> int:
         "expected_coinbase_script": expected_script,
         "rpc_user": redact(rpc_user),
         "rpc_password": redact(rpc_pass),
+        "kernel": args.kernel,
     }
     try:
         pearld_args = [
@@ -644,7 +667,7 @@ def main() -> int:
         procs.append(start_proc("gateway", gateway_cmd(run), gateway_log, env=gateway_env))
         time.sleep(2)
         assert_alive(procs, secrets_to_hide=secrets_to_hide)
-        miner_proc = start_proc("miner", miner_cmd(config_file, gw_port), miner_log, env=env)
+        miner_proc = start_proc("miner", miner_cmd(config_file, gw_port, args.kernel), miner_log, env=env)
         procs.append(miner_proc)
 
         goal = start_height + args.target_new_blocks

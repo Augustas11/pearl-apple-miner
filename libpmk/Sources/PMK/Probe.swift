@@ -1,10 +1,10 @@
-// SPDX-License-Identifier: Apache-2.0
 import Foundation
 import Metal
 
 public struct PMKProbeReport: Sendable {
     public let deviceName: String
     public let deviceClass: String
+    public let kernel: String
     public let checkedCases: Int
 }
 
@@ -21,7 +21,7 @@ public enum PMKProbeError: Error, CustomStringConvertible {
         case .resource(let message): return "probe resource error: \(message)"
         case .gpu(let message): return "probe GPU error: \(message)"
         case .layout(let message): return "K3-SG layout probe failed: \(message)"
-        case .knownAnswer(let message): return "K3-SG known-answer probe failed: \(message)"
+        case .knownAnswer(let message): return "K3 known-answer probe failed: \(message)"
         }
     }
 }
@@ -51,27 +51,108 @@ private struct PMKK3SGParams {
 }
 
 public func runProbe(device: MTLDevice, queue: MTLCommandQueue, library: MTLLibrary,
-                     pipeline: MTLComputePipelineState) throws -> PMKProbeReport {
-    try PMKK3SGProbe(device: device, queue: queue, library: library, pipeline: pipeline).run()
+                     pipeline: MTLComputePipelineState, kernel: K3Kernel = .sg) throws -> PMKProbeReport {
+    try PMKK3Probe(device: device, queue: queue, library: library, pipeline: pipeline, kernel: kernel).run()
 }
 
-private final class PMKK3SGProbe {
+private final class PMKK3Probe {
     let device: MTLDevice
     let queue: MTLCommandQueue
     let library: MTLLibrary
     let pipeline: MTLComputePipelineState
+    let kernel: K3Kernel
 
-    init(device: MTLDevice, queue: MTLCommandQueue, library: MTLLibrary, pipeline: MTLComputePipelineState) {
+    init(device: MTLDevice, queue: MTLCommandQueue, library: MTLLibrary, pipeline: MTLComputePipelineState, kernel: K3Kernel) {
         self.device = device
         self.queue = queue
         self.library = library
         self.pipeline = pipeline
+        self.kernel = kernel
     }
 
     func run() throws -> PMKProbeReport {
-        try runLayoutProbe()
+        if kernel == .sg {
+            try runLayoutProbe()
+        } else {
+            try runNALayoutProbe()
+        }
         let cases = try runKnownAnswerJob()
-        return PMKProbeReport(deviceName: device.name, deviceClass: metalDeviceClass(device), checkedCases: cases)
+        return PMKProbeReport(deviceName: device.name, deviceClass: metalDeviceClass(device), kernel: kernel.rawValue, checkedCases: cases)
+    }
+
+    private func runNALayoutProbe() throws {
+        guard let function = library.makeFunction(name: "na_probe") else {
+            throw PMKProbeError.missingFunction("na_probe")
+        }
+        let state: MTLComputePipelineState
+        do {
+            state = try device.makeComputePipelineState(function: function)
+        } catch {
+            throw PMKProbeError.gpu("na_probe pipeline compile failed: \(error)")
+        }
+        let wordsPerThread = 130
+        let threadCount = 128
+        guard let outputBuffer = device.makeBuffer(length: wordsPerThread * threadCount * MemoryLayout<UInt32>.stride) else {
+            throw PMKProbeError.resource("could not allocate NA layout probe buffer")
+        }
+        memset(outputBuffer.contents(), 0, outputBuffer.length)
+        guard let commandBuffer = queue.makeCommandBuffer(),
+              let encoder = commandBuffer.makeComputeCommandEncoder() else {
+            throw PMKProbeError.gpu("could not create NA layout probe command buffer")
+        }
+        encoder.setComputePipelineState(state)
+        encoder.setBuffer(outputBuffer, offset: 0, index: 0)
+        encoder.dispatchThreadgroups(MTLSize(width: 1, height: 1, depth: 1),
+                                     threadsPerThreadgroup: MTLSize(width: threadCount, height: 1, depth: 1))
+        encoder.endEncoding()
+        try commitAndBlock(commandBuffer, label: "na_probe")
+
+        let output = readUInt32s(outputBuffer, words: wordsPerThread * threadCount)
+        var failures: [String] = []
+        func check(_ condition: Bool, _ message: String) {
+            if !condition { failures.append(message) }
+        }
+        guard let rowShape = patternShape(CPUOracle.naRowsPattern),
+              let colShape = patternShape(CPUOracle.naColsPattern) else {
+            throw PMKProbeError.layout("committed NA patterns are not legal Pearl PeriodicPatterns")
+        }
+        let expectedOrigins = Set((0..<128).filter { offsetIsValid(rowShape, $0) }.flatMap { row in
+            (0..<64).filter { offsetIsValid(colShape, $0) }.map { col in [row, col] }
+        })
+        var origins = Set<[Int]>()
+        var cover = Set<[Int]>()
+        for tid in 0..<threadCount {
+            let base = tid * wordsPerThread
+            let count = Int(output[base])
+            check(count == CPUOracle.naRowsPattern.count * CPUOracle.naColsPattern.count,
+                  "thread \(tid) owned \(count) valid elements")
+            check(Int(output[base + 1]) >= count, "thread \(tid) capacity < valid count")
+            var points: [[Int]] = []
+            for i in 0..<min(count, 64) {
+                let row = Int(output[base + 2 + 2 * i])
+                let col = Int(output[base + 3 + 2 * i])
+                points.append([row, col])
+                cover.insert([row, col])
+            }
+            guard let r0 = points.map({ $0[0] }).min(),
+                  let c0 = points.map({ $0[1] }).min() else {
+                failures.append("thread \(tid) reported no coordinates")
+                continue
+            }
+            origins.insert([r0, c0])
+            let rows = Set(points.map { $0[0] }).sorted()
+            let cols = Set(points.map { $0[1] }).sorted()
+            check(rows.map { $0 - r0 } == CPUOracle.naRowsPattern,
+                  "thread \(tid) rows \(rows.map { $0 - r0 }) != NA rows")
+            check(cols.map { $0 - c0 } == CPUOracle.naColsPattern,
+                  "thread \(tid) cols \(cols.map { $0 - c0 }) != NA cols")
+            check(points.count == Set(points).count, "thread \(tid) contains duplicate coordinates")
+        }
+        check(origins == expectedOrigins, "NA origins did not match Pearl valid offsets")
+        check(cover.count == 128 * 64, "NA thread sets did not partition 128x64 tile")
+        if !failures.isEmpty {
+            throw PMKProbeError.layout(failures.prefix(8).joined(separator: "; "))
+        }
     }
 
     private func runLayoutProbe() throws {
@@ -250,14 +331,14 @@ private final class PMKK3SGProbe {
         let vector = try ProbeVector.load()
         guard vector.a.count == vector.m * vector.k,
               vector.b.count == vector.k * vector.n,
-              vector.tiles.count == (vector.m * vector.n / 32) * pmkSlotWords else {
-            throw PMKProbeError.resource("malformed K3-SG known-answer vector dimensions")
+              vector.tiles(for: kernel).count == (vector.m * vector.n / Int(kernel.tileElements)) * pmkSlotWords else {
+            throw PMKProbeError.resource("malformed K3 \(kernel.rawValue) known-answer vector dimensions")
         }
         guard vector.m == 256, vector.n == 256, vector.k == 4096 else {
-            throw PMKProbeError.resource("unexpected K3-SG probe vector shape \(vector.m)x\(vector.n)x\(vector.k)")
+            throw PMKProbeError.resource("unexpected K3 probe vector shape \(vector.m)x\(vector.n)x\(vector.k)")
         }
-        guard vector.m % 64 == 0, vector.n % 64 == 0, vector.k % 128 == 0 else {
-            throw PMKProbeError.resource("K3-SG probe vector shape violates production dispatch constraints")
+        guard vector.m % kernel.tileM == 0, vector.n % kernel.tileN == 0, vector.k % 128 == 0 else {
+            throw PMKProbeError.resource("K3 \(kernel.rawValue) probe vector shape violates production dispatch constraints")
         }
 
         guard let aBuffer = vector.a.withUnsafeBytes({ raw in
@@ -268,8 +349,9 @@ private final class PMKK3SGProbe {
             throw PMKProbeError.resource("could not allocate known-answer buffers")
         }
 
-        let tiles = (0..<(vector.m * vector.n / 32)).map {
-            Array(vector.tiles[($0 * pmkSlotWords)..<(($0 + 1) * pmkSlotWords)])
+        let tileWords = vector.tiles(for: kernel)
+        let tiles = (0..<(vector.m * vector.n / Int(kernel.tileElements))).map {
+            Array(tileWords[($0 * pmkSlotWords)..<(($0 + 1) * pmkSlotWords)])
         }
         var checked = 0
         for testCase in vector.cases {
@@ -291,7 +373,7 @@ private final class PMKK3SGProbe {
 
             guard let commandBuffer = queue.makeCommandBuffer(),
                   let encoder = commandBuffer.makeComputeCommandEncoder() else {
-                throw PMKProbeError.gpu("could not create K3-SG known-answer command buffer")
+                throw PMKProbeError.gpu("could not create K3 \(kernel.rawValue) known-answer command buffer")
             }
             var parameterWords = params.words
             encoder.setComputePipelineState(pipeline)
@@ -302,10 +384,10 @@ private final class PMKK3SGProbe {
             encoder.setBuffer(blocks, offset: 0, index: 4)
             encoder.setBuffer(shares, offset: 0, index: 5)
             encoder.setBuffer(sinkBuffer, offset: 0, index: 6)
-            encoder.dispatchThreadgroups(MTLSize(width: vector.n / 64, height: vector.m / 64, depth: 1),
-                                         threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
+            encoder.dispatchThreadgroups(MTLSize(width: vector.n / kernel.tileN, height: vector.m / kernel.tileM, depth: 1),
+                                         threadsPerThreadgroup: MTLSize(width: kernel.threadsPerThreadgroup, height: 1, depth: 1))
             encoder.endEncoding()
-            try commitAndBlock(commandBuffer, label: "K3-SG known-answer \(testCase.name)")
+            try commitAndBlock(commandBuffer, label: "K3 \(kernel.rawValue) known-answer \(testCase.name)")
 
             var output = [UInt32]()
             output.append(contentsOf: readUInt32s(counters, words: 2))
@@ -350,6 +432,11 @@ private struct ProbeVector {
     let a: Data
     let b: Data
     let tiles: [UInt32]
+    let tilesNA: [UInt32]
+
+    func tiles(for kernel: K3Kernel) -> [UInt32] {
+        kernel == .na ? tilesNA : tiles
+    }
 
     static func load() throws -> ProbeVector {
         let base = try pmkResourceURL("probe/v1_256x256x4096")
@@ -392,13 +479,15 @@ private struct ProbeVector {
         let aURL = base.appendingPathComponent("A.bin")
         let bURL = base.appendingPathComponent("B.bin")
         let tilesURL = base.appendingPathComponent("tiles.bin")
+        let tilesNAURL = base.appendingPathComponent("tiles_na.bin")
         do {
             return ProbeVector(m: try int("m"), n: try int("n"), k: try int("k"),
                                key: try u32Array(json["key"], label: "key"),
                                cases: cases,
                                a: try Data(contentsOf: aURL),
                                b: try Data(contentsOf: bURL),
-                               tiles: try readU32File(tilesURL))
+                               tiles: try readU32File(tilesURL),
+                               tilesNA: try readU32File(tilesNAURL))
         } catch let probeError as PMKProbeError {
             throw probeError
         } catch {

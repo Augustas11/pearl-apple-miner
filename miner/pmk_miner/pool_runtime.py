@@ -6,13 +6,15 @@ import asyncio
 from collections import Counter
 import dataclasses
 import math
+import os
 from pathlib import Path
 import signal
 import time
 
 from .monitor import poisson_interval, bits_to_target
 from .native import Native
-from .pipeline import Pipeline, Shape, FatalDeviceError, PoolSubmissionPolicy
+from .pipeline import Pipeline, Shape, FatalDeviceError, PoolSubmissionPolicy, ShapeBudgetController
+from .kernel import apply_kernel_environment, resolve_v3_kernel, scheme_for_kernel
 from .runtime import RunState, ProbeSchedule, RoutineTelemetry, RotatingJsonlSink
 from .transport import SubmissionLedger
 from .pool import PoolClient, mask_wallet
@@ -39,6 +41,12 @@ def rejection_alarm(outcome, accepted_before):
 
 
 async def mine_pool(args, config, log, memory_limits, *, admission_refresh=None, admission_deadline=None):
+    requested_kernel = getattr(args, 'kernel', 'auto')
+    if requested_kernel == 'auto':
+        requested_kernel = config.get('run', {}).get('kernel', requested_kernel)
+    kernel, device_class = resolve_v3_kernel(requested_kernel)
+    apply_kernel_environment(kernel)
+    scheme = scheme_for_kernel(kernel)
     wallet = load_wallet(args.wallet_file, args.wallet_allowlist or config.get('pool', {}).get('wallet_allowlist'))
     emit = log
     def log(event, **fields):
@@ -47,8 +55,10 @@ async def mine_pool(args, config, log, memory_limits, *, admission_refresh=None,
     if not args.pool_url or not args.worker:
         raise ValueError('pool URL and worker are required')
     # Pool startup never opens the gateway environment or constructs a node RPC client.
-    shape = Shape(**{k: config.get(k, v) for k, v in dataclasses.asdict(Shape()).items()})
-    budget, estimate = memory_limits(shape)
+    initial_shape = Shape(**{k: config.get(k, v) for k, v in dataclasses.asdict(Shape()).items()})
+    shape_controller = ShapeBudgetController(initial_shape)
+    shape = shape_controller.shape
+    budget, estimate = _memory_limits(memory_limits, shape, scheme)
     run = config.get('run', {})
     pool_cfg = config.get('pool', {})
     seconds = float(run.get('max_seconds', 0))
@@ -88,9 +98,12 @@ async def mine_pool(args, config, log, memory_limits, *, admission_refresh=None,
             target = client.latest.target if client.latest else 0
             shares_per_second = rate / 2 * target / 2**256
             fields.update(jobs_per_second=completed_jobs / elapsed, tops=rate / 1e12,
+                completed_ops=completed_ops, elapsed_seconds=elapsed,
                 accepted=counts['accepted'],
                 rejected=sum(counts[k] for k in ('stale', 'duplicate', 'low-difficulty', 'invalid')),
-                expected_share_seconds=1 / shares_per_second if shares_per_second else None)
+                expected_share_seconds=1 / shares_per_second if shares_per_second else None,
+                shape=dataclasses.asdict(shape), throttled=shape_controller.throttled,
+                kernel=kernel, gpu_p90_seconds=shape_controller.p90())
         log(event, **fields)
 
     telemetry = RoutineTelemetry(telemetry_log, seconds=float(run.get('telemetry_interval_seconds', 5)),
@@ -143,6 +156,13 @@ async def mine_pool(args, config, log, memory_limits, *, admission_refresh=None,
                 window_observed = 0
             checkpoint()
             return
+        if event == 'completed' and isinstance(fields.get('gpu_seconds'), (int, float)):
+            gpu_seconds = float(fields['gpu_seconds'])
+            forced_shape = os.environ.get('PMK_TEST_FORCE_GPU_SHAPE')
+            forced_seconds = os.environ.get('PMK_TEST_FORCE_GPU_SECONDS')
+            if forced_shape == str(shape.m) and forced_seconds:
+                gpu_seconds = max(gpu_seconds, float(forced_seconds))
+            shape_controller.record(gpu_seconds)
         telemetry.log(event, **fields)
 
     async def submit(job, proof):
@@ -175,8 +195,10 @@ async def mine_pool(args, config, log, memory_limits, *, admission_refresh=None,
             stop.set()
 
     try:
-        native = await asyncio.to_thread(Native)
-        pipeline = Pipeline(native, shape, pipeline_log, submission_policy=PoolSubmissionPolicy(), desktop=desktop)
+        native = await asyncio.to_thread(_native_for_kernel, kernel)
+        kernel_metadata = (native.validate_v3_kernel(scheme)
+                           if hasattr(native, 'validate_v3_kernel') else None)
+        pipeline = _pipeline_for_shape(native, shape, pipeline_log, scheme, desktop)
         probes = ProbeSchedule(float(run.get('probe_interval_seconds', 6 * 3600)))
         def schedule_admission(deadline):
             if deadline is not None:
@@ -186,7 +208,10 @@ async def mine_pool(args, config, log, memory_limits, *, admission_refresh=None,
         schedule_admission(admission_deadline)
         log('pool_startup', wallet=mask_wallet(wallet),
             shape=dataclasses.asdict(shape), memory_budget_bytes=budget,
-            memory_estimate_bytes=estimate, probe_key=native.probe_key)
+            memory_estimate_bytes=estimate, probe_key=native.probe_key,
+            requested_kernel=requested_kernel, effective_kernel=kernel,
+            device_class=device_class, kernel_metadata=kernel_metadata,
+            throttled=shape_controller.throttled)
         while not stop.is_set():
             if desktop and not await desktop.wait_ready(lambda: stop.is_set() or supervisor.done()):
                 break
@@ -210,6 +235,21 @@ async def mine_pool(args, config, log, memory_limits, *, admission_refresh=None,
             if source is None:
                 await asyncio.sleep(.05)
                 continue
+            if pipeline is not None and shape_controller.predicted_needs_stepdown(pipeline.gpu_rate):
+                if shape_controller.step_down('predicted_budget'):
+                    shape = shape_controller.shape
+                    budget, estimate = _memory_limits(memory_limits, shape, scheme)
+                    pipeline.cancel()
+                    native.close()
+                    native = await asyncio.to_thread(_native_for_kernel, kernel)
+                    kernel_metadata = (native.validate_v3_kernel(scheme)
+                                       if hasattr(native, 'validate_v3_kernel') else None)
+                    pipeline = _pipeline_for_shape(native, shape, pipeline_log, scheme, desktop)
+                    log('shape_changed', reason='predicted_budget', shape=dataclasses.asdict(shape),
+                        memory_budget_bytes=budget, memory_estimate_bytes=estimate,
+                        throttled=shape_controller.throttled, kernel=kernel,
+                        kernel_metadata=kernel_metadata)
+                    continue
             if pipeline.source is None or pipeline.source.template_identity != source.template_identity:
                 delay = 1.0 - (time.monotonic() - last_template_build)
                 if delay > 0:
@@ -234,7 +274,35 @@ async def mine_pool(args, config, log, memory_limits, *, admission_refresh=None,
             results = await asyncio.gather(*(lane(i) for i in range(shape.slots)), return_exceptions=True)
             for result in results:
                 if isinstance(result, BaseException):
+                    if _is_budget_gate(result) and shape_controller.step_down('command_budget_gate'):
+                        log('shape_changed', reason='command_budget_gate',
+                            shape=dataclasses.asdict(shape_controller.shape),
+                            throttled=shape_controller.throttled, kernel=kernel)
+                        break
+                    if _is_budget_gate(result):
+                        log('shape_budget_minimum', reason='command_budget_gate',
+                            shape=dataclasses.asdict(shape_controller.shape),
+                            throttled=shape_controller.throttled, kernel=kernel)
+                        if pipeline is not None:
+                            pipeline.gpu_rate = None
+                        await asyncio.sleep(5)
+                        break
                     raise result
+            reason = shape_controller.consume_change()
+            if reason:
+                shape = shape_controller.shape
+                budget, estimate = _memory_limits(memory_limits, shape, scheme)
+                pipeline.cancel()
+                native.close()
+                native = await asyncio.to_thread(_native_for_kernel, kernel)
+                kernel_metadata = (native.validate_v3_kernel(scheme)
+                                   if hasattr(native, 'validate_v3_kernel') else None)
+                pipeline = _pipeline_for_shape(native, shape, pipeline_log, scheme, desktop)
+                log('shape_changed', reason=reason, shape=dataclasses.asdict(shape),
+                    memory_budget_bytes=budget, memory_estimate_bytes=estimate,
+                    throttled=shape_controller.throttled, kernel=kernel,
+                    kernel_metadata=kernel_metadata)
+                continue
             if max_jobs and reserved_jobs >= max_jobs and completed_jobs >= max_jobs:
                 stop.set()
         if supervisor.done():
@@ -271,10 +339,36 @@ async def mine_pool(args, config, log, memory_limits, *, admission_refresh=None,
             lower=lower, upper=upper, poisson_ok=lower <= observed <= upper,
             elapsed_seconds=elapsed, ops_per_second=completed_ops / elapsed,
             pool_hashrate=completed_ops / (2 * elapsed), block_candidates=blocks,
-            failed=fatal is not None)
+            failed=fatal is not None, shape=dataclasses.asdict(shape),
+            throttled=shape_controller.throttled, kernel=kernel)
         if desktop:
             summary.update(desktop.snapshot())
         state.save(pool_summary=summary)
         log('pool_summary', **summary)
         if not summary['poisson_ok']:
             log('alert', severity='health', reason='share_rate_poisson', expected=expected, observed=observed)
+
+
+def _native_for_kernel(kernel):
+    try:
+        return Native(kernel=kernel)
+    except TypeError:
+        return Native()
+
+
+def _memory_limits(function, shape, scheme):
+    try:
+        return function(shape, scheme)
+    except TypeError as exc:
+        if "positional" not in str(exc):
+            raise
+        return function(shape)
+
+
+def _pipeline_for_shape(native, shape, log_fn, scheme, desktop):
+    return Pipeline(native, shape, log_fn, scheme=scheme,
+                    submission_policy=PoolSubmissionPolicy(), desktop=desktop)
+
+
+def _is_budget_gate(exc):
+    return isinstance(exc, FatalDeviceError) and '400 ms' in str(exc)

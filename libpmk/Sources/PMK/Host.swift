@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: Apache-2.0
 import Foundation
 import Metal
 import CryptoKit
@@ -17,6 +16,48 @@ let defaultProbeRefreshHours: TimeInterval = 24
 let profileEnvironmentKey = "PMK_PROFILE_JSON"
 let legacyProfileEnvironmentKey = "PMK_PROFILE"
 let splitProfileEnvironmentKey = "PMK_PROFILE_SPLIT_CB"
+let kernelEnvironmentKey = "PMK_KERNEL"
+
+public enum K3Kernel: String {
+    case sg
+    case na
+
+    var label: String { rawValue.uppercased() }
+    var functionName: String { self == .na ? "k3na" : "k3sg" }
+    var sourceFile: String { self == .na ? "k3na.metal" : "k3sg.metal" }
+    var tileM: Int { self == .na ? 128 : 64 }
+    var tileN: Int { 64 }
+    var threadsPerThreadgroup: Int { 128 }
+    var patternId: UInt32 { self == .na ? 0 : 1 }
+    var rowsPattern: [Int] { self == .na ? CPUOracle.naRowsPattern : CPUOracle.sgRowsPattern }
+    var colsPattern: [Int] { self == .na ? CPUOracle.naColsPattern : CPUOracle.sgColsPattern }
+    var tileElements: UInt64 { UInt64(rowsPattern.count * colsPattern.count) }
+    var settings: String {
+        switch self {
+        case .sg:
+            return "kernel=sg;MSL3.1;fastMath=false;VARIANT=3;BM=64;BN=64;BK=16;WM=2;WN=2;PF=2;probe-v2"
+        case .na:
+            return "kernel=na;MSL4.0;fastMath=false;K3_VARIANT=2;BM=128;BN=64;RK=128;execution_simdgroups=4;probe-v1"
+        }
+    }
+}
+
+func resolveK3Kernel(device: MTLDevice, env: [String: String] = ProcessInfo.processInfo.environment) throws -> K3Kernel {
+    let raw = (env[kernelEnvironmentKey] ?? "auto").lowercased()
+    switch raw {
+    case "auto", "":
+        return device.supportsFamily(.apple10) ? .na : .sg
+    case "sg":
+        return .sg
+    case "na":
+        guard device.supportsFamily(.apple10) else {
+            throw PMKError("DO NOT MINE: K3-NA requires Apple10+ GPU family")
+        }
+        return .na
+    default:
+        throw PMKError("DO NOT MINE: invalid PMK_KERNEL=\(raw)")
+    }
+}
 
 func words<T>(_ value: T) -> [UInt32] {
     withUnsafeBytes(of: value) { Array($0.bindMemory(to: UInt32.self)) }
@@ -126,7 +167,7 @@ func metalDeviceClass(_ device: MTLDevice) -> String {
 }
 
 func requiresG3Admission(deviceClass: String) -> Bool {
-    ["Apple7", "Apple8", "Apple9"].contains(deviceClass)
+    ["Apple7", "Apple8", "Apple9", "Apple10"].contains(deviceClass)
 }
 
 func canRecoverOverflow(tileCount: UInt64, overflow: UInt32) -> Bool {
@@ -177,7 +218,7 @@ func jsonString(_ value: String) -> String {
     String(data: try! JSONEncoder().encode(value), encoding: .utf8)!
 }
 
-func requireG3Admission(deviceName: String, deviceClass: String, cacheKey: String,
+func requireG3Admission(deviceName: String, deviceClass: String, kernel: K3Kernel = .sg, cacheKey: String,
                         osBuild: String, now: Date,
                         path: String? = ProcessInfo.processInfo.environment["PMK_G3_ADMISSION_FILE"]) throws {
     guard requiresG3Admission(deviceClass: deviceClass) else { return }
@@ -189,13 +230,16 @@ func requireG3Admission(deviceName: String, deviceClass: String, cacheKey: Strin
           let devices = root["devices"] as? [[String: Any]] else {
         throw PMKError("DO NOT MINE: malformed G3 admission file")
     }
-    guard let record = devices.first(where: { ($0["gpu_name"] as? String) == deviceName }) else {
-        throw PMKError("DO NOT MINE: no G3 pass recorded for \(deviceName)")
+    guard let record = devices.first(where: {
+        ($0["gpu_name"] as? String) == deviceName && ($0["kernel"] as? String) == kernel.rawValue
+    }) else {
+        throw PMKError("DO NOT MINE: no G3 \(kernel.rawValue) pass recorded for \(deviceName)")
     }
     let lastProbe = (record["last_probe_unix"] as? NSNumber)?.doubleValue ?? 0
     let nowUnix = now.timeIntervalSince1970
     guard (record["g3_passed"] as? Bool) == true,
           (record["device_class"] as? String) == deviceClass,
+          (record["kernel"] as? String) == kernel.rawValue,
           (record["cache_key"] as? String) == cacheKey,
           (record["os_build"] as? String) == osBuild,
           lastProbe.isFinite, lastProbe > 0,
@@ -215,6 +259,7 @@ func requireG3Admission(deviceName: String, deviceClass: String, cacheKey: Strin
 final class Context {
     let device: MTLDevice, queue: MTLCommandQueue, library: MTLLibrary
     let k3: MTLComputePipelineState
+    let kernel: K3Kernel
     let cacheKey: String
     let deviceClass: String
     let osBuild: String
@@ -234,11 +279,13 @@ final class Context {
     let budget: Int
     var noisePipelines: [String: MTLComputePipelineState] = [:]
 
-    init(requireAdmission: Bool = true) throws {
+    init(requireAdmission: Bool = true, kernelOverride: K3Kernel? = nil) throws {
         guard let dev = MTLCreateSystemDefaultDevice(), dev.hasUnifiedMemory,
               dev.supportsFamily(.apple7), let q = dev.makeCommandQueue() else {
             throw PMKError("DO NOT MINE: Apple7+ unified-memory Metal device required")
         }
+        let selectedKernel = try kernelOverride ?? resolveK3Kernel(device: dev)
+        kernel = selectedKernel
         self.requireAdmission = requireAdmission
         profileEnabled = envFlag(profileEnvironmentKey) || envFlag(legacyProfileEnvironmentKey)
         profileSplitCommandBuffers = profileEnabled && envFlag(splitProfileEnvironmentKey)
@@ -246,32 +293,46 @@ final class Context {
         device = dev; queue = q
         budget = Int(ProcessInfo.processInfo.physicalMemory / 4)
         let sourceURL = try pmkResourceURL("metal")
-        let source = try String(contentsOf: sourceURL.appendingPathComponent("k3sg.metal"), encoding: .utf8)
+        let source = try String(contentsOf: sourceURL.appendingPathComponent(selectedKernel.sourceFile), encoding: .utf8)
             + "\n" + String(contentsOf: sourceURL.appendingPathComponent("noise.metal"), encoding: .utf8)
         let options = MTLCompileOptions()
-        options.languageVersion = .version3_1
+        if selectedKernel == .na {
+            guard #available(macOS 26.0, *) else {
+                throw PMKError("DO NOT MINE: K3-NA requires Metal 4 / macOS 26+")
+            }
+            options.languageVersion = .version4_0
+        } else {
+            options.languageVersion = .version3_1
+        }
         options.fastMathEnabled = false
-        options.preprocessorMacros = [
-            "VARIANT": NSNumber(value: 3),
-            "BM": NSNumber(value: 64),
-            "BN": NSNumber(value: 64),
-            "BK": NSNumber(value: 16),
-            "WM": NSNumber(value: 2),
-            "WN": NSNumber(value: 2),
-            "PF": NSNumber(value: 2),
-        ]
-        let settings = "MSL3.1;fastMath=false;VARIANT=3;BM=64;BN=64;BK=16;WM=2;WN=2;PF=2;probe-v1"
+        if selectedKernel == .sg {
+            options.preprocessorMacros = [
+                "VARIANT": NSNumber(value: 3),
+                "BM": NSNumber(value: 64),
+                "BN": NSNumber(value: 64),
+                "BK": NSNumber(value: 16),
+                "WM": NSNumber(value: 2),
+                "WN": NSNumber(value: 2),
+                "PF": NSNumber(value: 2),
+            ]
+        } else {
+            options.preprocessorMacros = ["K3_VARIANT": NSNumber(value: 2)]
+        }
+        let settings = selectedKernel.settings
         osBuild = try currentOSBuild()
         probeRefreshInterval = probeRefreshIntervalSeconds()
         lastProbeUptime = ProcessInfo.processInfo.systemUptime
         cacheKey = SHA256.hash(data: Data((source + settings + dev.name + osBuild).utf8)).map { String(format: "%02x", $0) }.joined()
         library = try dev.makeLibrary(source: source, options: options)
-        guard let function = library.makeFunction(name: "k3sg") else { throw PMKError("Missing K3") }
+        guard let function = library.makeFunction(name: selectedKernel.functionName) else { throw PMKError("Missing K3") }
         k3 = try dev.makeComputePipelineState(function: function)
-        guard k3.threadExecutionWidth == 32, k3.maxTotalThreadsPerThreadgroup >= 128 else { throw PMKError("DO NOT MINE: unexpected execution width") }
-        _ = try runProbe(device: dev, queue: q, library: library, pipeline: k3)
+        guard k3.threadExecutionWidth == 32,
+              k3.maxTotalThreadsPerThreadgroup >= selectedKernel.threadsPerThreadgroup else {
+            throw PMKError("DO NOT MINE: unexpected execution width")
+        }
+        _ = try runProbe(device: dev, queue: q, library: library, pipeline: k3, kernel: selectedKernel)
         if requireAdmission {
-            try requireG3Admission(deviceName: dev.name, deviceClass: deviceClass,
+            try requireG3Admission(deviceName: dev.name, deviceClass: deviceClass, kernel: selectedKernel,
                                    cacheKey: cacheKey, osBuild: osBuild,
                                    now: Date())
         }
@@ -280,9 +341,9 @@ final class Context {
     func refreshProbe() throws {
         guard jobs == 0 else { throw PMKError("probe refresh busy") }
         guard try currentOSBuild() == osBuild else { throw PMKError("OS build changed since G3 admission") }
-        _ = try runProbe(device: device, queue: queue, library: library, pipeline: k3)
+        _ = try runProbe(device: device, queue: queue, library: library, pipeline: k3, kernel: kernel)
         if requireAdmission {
-            try requireG3Admission(deviceName: device.name, deviceClass: deviceClass,
+            try requireG3Admission(deviceName: device.name, deviceClass: deviceClass, kernel: kernel,
                                    cacheKey: cacheKey, osBuild: osBuild,
                                    now: Date())
         }
@@ -368,7 +429,12 @@ final class Job {
         e.setBuffer(a, offset: 0, index: 0); e.setBuffer(b, offset: 0, index: 1)
         e.setBytes(&p, length: 128, index: 2)
         for (i, buf) in [ctr, blocks, shares, sink].enumerated() { e.setBuffer(buf, offset: 0, index: i + 3) }
-        e.dispatchThreadgroups(MTLSize(width: Int(desc.n) / 64, height: Int(desc.m) / 64, depth: 1), threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
+        e.dispatchThreadgroups(MTLSize(width: Int(desc.n) / context.kernel.tileN,
+                                       height: Int(desc.m) / context.kernel.tileM,
+                                       depth: 1),
+                               threadsPerThreadgroup: MTLSize(width: context.kernel.threadsPerThreadgroup,
+                                                              height: 1,
+                                                              depth: 1))
         e.endEncoding()
     }
     func complete(_ cb: MTLCommandBuffer) {
@@ -393,7 +459,7 @@ final class Job {
         if result.status == 0 {
             let counts = ctr.contents().bindMemory(to: UInt32.self, capacity: 2)
             result.block_count = counts[0]; result.share_count = counts[1]
-            let tiles = UInt64(desc.m) * UInt64(desc.n) / 32
+            let tiles = UInt64(desc.m) * UInt64(desc.n) / context.kernel.tileElements
             for (buf, capacity) in [(blocks, desc.block_capacity), (shares, desc.share_capacity)] {
                 let ptr = buf.contents().bindMemory(to: UInt32.self, capacity: buf.length / 4)
                 if !(0..<guardWords).allSatisfy({ ptr[Int(capacity) * slotWords + $0] == canary }) {
@@ -429,7 +495,8 @@ final class Job {
                     let recovered = cpu.a.withUnsafeBufferPointer { ap in cpu.b.withUnsafeBufferPointer { bp in
                         CPUOracle.tiles(m: Int(desc.m), n: Int(desc.n), k: Int(desc.k),
                             a: ap.baseAddress!, b: bp.baseAddress!, key: words(desc.a_seed),
-                            block: words(desc.block_bound), share: words(desc.share_bound))
+                            block: words(desc.block_bound), share: words(desc.share_bound),
+                            kernel: context.kernel)
                     } }
                     if !noiseMatches || recovered.block.count != Int(counts[0]) || recovered.share.count != Int(counts[1]) {
                         result.status = Int32(PMK_GPU_FAILED)

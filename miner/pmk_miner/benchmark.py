@@ -8,11 +8,13 @@ import os
 from pathlib import Path
 import platform
 import signal
+import statistics
 import subprocess
 import time
 from typing import Any
 
 from . import __version__
+from .kernel import apply_kernel_environment, resolve_v3_kernel, scheme_for_kernel
 from .monitor import DIFF1_TARGET, POW_DENOMINATOR, bits_to_target
 from .native import Native
 from .pipeline import Pipeline, Shape
@@ -66,6 +68,16 @@ async def _ensure_admission(stop: asyncio.Event) -> Path:
     return result
 
 
+def _reuse_admission_path() -> Path:
+    raw = os.environ.get("PMK_G3_ADMISSION_FILE")
+    if not raw:
+        raise RuntimeError("benchmark admission reuse requires PMK_G3_ADMISSION_FILE")
+    path = Path(raw)
+    if not path.is_file():
+        raise RuntimeError("benchmark admission reuse file is missing")
+    return path
+
+
 def _sysctl(name: str, default: str = "unknown") -> str:
     try:
         return subprocess.check_output(["sysctl", "-n", name], text=True).strip() or default
@@ -103,7 +115,7 @@ def _paste_block(summary: dict[str, Any]) -> str:
         "```text",
         f"PMK {summary['pmk_version']} | macOS {summary['macos']}",
         f"Chip: {summary['chip']} | cores: {summary['gpu_cores']} | power: {summary['power_source']}",
-        f"Shape: {shape['m']}x{shape['n']}x{shape['k']} ({shape['slots']} slots)",
+        f"Kernel: K3-{summary['kernel'].upper()} | Shape: {shape['m']}x{shape['n']}x{shape['k']} ({shape['slots']} slots)",
         f"Duration: {summary['elapsed_seconds']:.2f}s | jobs: {summary['jobs']}",
         f"Throughput: {summary['tops']:.3f} TOPS | {summary['macs_per_second']:,.0f} MAC/s (pool H/s) | {summary['jobs_per_second']:.3f} jobs/s",
         f"GPU busy: {summary['gpu_busy_pct']:.1f}% | difficulty: {summary['difficulty']:.0f} | expected share: {expected_text}",
@@ -132,6 +144,9 @@ async def run_benchmark(args, log) -> dict[str, Any]:
         raise ValueError("benchmark must be in [10, 600]")
     if not 1 <= difficulty <= 2**64:
         raise ValueError("difficulty must be in [1, 2^64]")
+    kernel, device_class = resolve_v3_kernel(getattr(args, "kernel", "auto"))
+    apply_kernel_environment(kernel)
+    scheme = scheme_for_kernel(kernel)
 
     stop = asyncio.Event()
     loop, installed = _install_signal_handlers(stop)
@@ -141,14 +156,19 @@ async def run_benchmark(args, log) -> dict[str, Any]:
     desktop = getattr(args, "desktop", None)
     clock = getattr(args, "benchmark_clock", time.monotonic)
     try:
-        admission = await _ensure_admission(stop)
+        reuse_admission = bool(getattr(args, "benchmark_reuse_admission", False))
+        admission = _reuse_admission_path() if reuse_admission else await _ensure_admission(stop)
         if stop.is_set():
             raise InterruptedError("benchmark interrupted during G3 admission")
-        log("benchmark_admission", path=str(admission), full_g3=True)
+        log("benchmark_admission", path=str(admission), full_g3=not reuse_admission,
+            reused=reuse_admission, kernel=kernel)
         source = synthetic_job()
-        native = Native()
-        pipeline = Pipeline(
-            native, PRODUCTION_SHAPE, log, max_gpu_seconds=None, desktop=desktop,
+        native = _native_for_kernel(kernel)
+        kernel_metadata = (native.validate_v3_kernel(scheme)
+                           if hasattr(native, "validate_v3_kernel") else None)
+        pipeline = _pipeline_for_scheme(
+            native, PRODUCTION_SHAPE, log, scheme,
+            max_gpu_seconds=None, desktop=desktop,
         )
         pipeline.set_template(source)
         power_source = desktop.power_source() if desktop is not None else "unknown"
@@ -156,7 +176,10 @@ async def run_benchmark(args, log) -> dict[str, Any]:
         started = clock()
         deadline = started + duration
         log("benchmark_started", duration_seconds=duration, difficulty=difficulty,
-            shape={"m": 8192, "n": 8192, "k": 4096, "slots": 2}, power_source=power_source)
+            shape={"m": 8192, "n": 8192, "k": 4096, "slots": 2},
+            power_source=power_source, requested_kernel=getattr(args, "kernel", "auto"),
+            effective_kernel=kernel, device_class=device_class,
+            kernel_metadata=kernel_metadata)
 
         async def submit(*_ignored) -> None:
             raise AssertionError("tiny-target offline benchmark unexpectedly found a candidate")
@@ -184,10 +207,26 @@ async def run_benchmark(args, log) -> dict[str, Any]:
         ops_per_second = completed_ops / elapsed
         macs_per_second = ops_per_second / 2
         busy_seconds = max(0.0, (float(desktop.busy_seconds) - busy_before) if desktop else sum(r.gpu_seconds for r in records))
+        ordered_gpu_seconds = [record.gpu_seconds for record in sorted(records, key=lambda record: getattr(record, "job_id", 0))
+                               if record.gpu_seconds > 0]
+        drift_window = max(1, len(ordered_gpu_seconds) // 10) if ordered_gpu_seconds else 0
+        early_gpu_seconds = (statistics.median(ordered_gpu_seconds[:drift_window])
+                             if drift_window else None)
+        late_gpu_seconds = (statistics.median(ordered_gpu_seconds[-drift_window:])
+                            if drift_window else None)
+        max_gpu_seconds = max(ordered_gpu_seconds) if ordered_gpu_seconds else None
+        over_budget_jobs = sum(value > 0.4 for value in ordered_gpu_seconds)
+        gpu_job_time_drift_pct = (
+            100.0 * (late_gpu_seconds / early_gpu_seconds - 1.0)
+            if early_gpu_seconds and late_gpu_seconds else None
+        )
         summary = {
             "event": "benchmark_summary",
             "offline": True,
             "shape": {"m": 8192, "n": 8192, "k": 4096, "slots": 2},
+            "kernel": kernel,
+            "device_class": device_class,
+            "kernel_metadata": kernel_metadata,
             "requested_seconds": duration,
             "elapsed_seconds": elapsed,
             "jobs": jobs,
@@ -199,6 +238,13 @@ async def run_benchmark(args, log) -> dict[str, Any]:
             "pool_hashrate": macs_per_second,
             "gpu_busy_seconds": busy_seconds,
             "gpu_busy_pct": min(100.0, 100 * busy_seconds / elapsed),
+            "gpu_job_seconds_early_median": early_gpu_seconds,
+            "gpu_job_seconds_late_median": late_gpu_seconds,
+            "gpu_job_time_drift_pct": gpu_job_time_drift_pct,
+            "gpu_job_seconds_max": max_gpu_seconds,
+            "command_budget_seconds": 0.4,
+            "command_budget_overruns": over_budget_jobs,
+            "command_budget_passed": bool(ordered_gpu_seconds) and over_budget_jobs == 0,
             "difficulty": difficulty,
             "diff1_macs": DIFF1_MACS,
             "expected_share_seconds": (difficulty * DIFF1_MACS / macs_per_second) if macs_per_second else None,
@@ -218,3 +264,19 @@ async def run_benchmark(args, log) -> dict[str, Any]:
         for sig, previous in installed:
             loop.remove_signal_handler(sig)
             signal.signal(sig, previous)
+
+
+def _native_for_kernel(kernel):
+    try:
+        return Native(kernel=kernel)
+    except TypeError:
+        return Native()
+
+
+def _pipeline_for_scheme(native, shape, log, scheme, **kwargs):
+    try:
+        return Pipeline(native, shape, log, scheme=scheme, **kwargs)
+    except TypeError as exc:
+        if "scheme" not in str(exc):
+            raise
+        return Pipeline(native, shape, log, **kwargs)

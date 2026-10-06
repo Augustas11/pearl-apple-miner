@@ -90,7 +90,7 @@ def test_miner_summary_requires_payout_and_stopped_counts(tmp_path: Path) -> Non
     ]
 
 
-def test_regtest_e2e_accepts_blocks_and_rejects_corrupted_certificates() -> None:
+def test_regtest_e2e_accepts_blocks_and_rejects_corrupted_certificates(v3_g3_admission) -> None:
     env = os.environ.copy()
     env.setdefault("PYTHONPATH", str(ROOT / "miner"))
     result = subprocess.run(

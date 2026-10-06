@@ -85,3 +85,26 @@ func currentPowerSource() -> PowerSource {
 public func pmkPowerSource() -> Int32 {
     currentPowerSource().rawValue
 }
+
+enum ThermalState: Int32 {
+    case nominal = 0
+    case fair = 1
+    case serious = 2
+    case critical = 3
+    case unknown = 4
+}
+
+func currentThermalState(_ state: ProcessInfo.ThermalState = ProcessInfo.processInfo.thermalState) -> ThermalState {
+    switch state {
+    case .nominal: return .nominal
+    case .fair: return .fair
+    case .serious: return .serious
+    case .critical: return .critical
+    @unknown default: return .unknown
+    }
+}
+
+@_cdecl("pmk_thermal_state")
+public func pmkThermalState() -> Int32 {
+    currentThermalState().rawValue
+}

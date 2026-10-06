@@ -21,6 +21,8 @@ class DesktopNative:
         self.lib.pmk_activity_end.restype = None
         self.lib.pmk_power_source.argtypes = []
         self.lib.pmk_power_source.restype = C.c_int32
+        self.lib.pmk_thermal_state.argtypes = []
+        self.lib.pmk_thermal_state.restype = C.c_int32
 
     @contextmanager
     def activity(self, reason='pmk mining session'):
@@ -34,6 +36,10 @@ class DesktopNative:
 
     def power_source(self):
         return {0: 'unknown', 1: 'ac', 2: 'battery', 3: 'desktop'}.get(self.lib.pmk_power_source(), 'unknown')
+
+    def thermal_state(self):
+        return {0: 'nominal', 1: 'fair', 2: 'serious', 3: 'critical', 4: 'unknown'}.get(
+            self.lib.pmk_thermal_state(), 'unknown')
 
 
 class DesktopControls:

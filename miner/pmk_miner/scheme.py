@@ -55,6 +55,11 @@ class Scheme:
     kernel_symbol: str
     min_k: int = 2048
     max_k: int = 8192
+    kernel_id: str = "sg"
+    m_multiple: int = 64
+    n_multiple: int = 64
+    rows_pattern: tuple[int, ...] = (0, 8, 16, 24)
+    cols_pattern: tuple[int, ...] = (0, 1, 8, 9, 16, 17, 24, 25)
 
     def ensure_k(self, k: int) -> None:
         if not (self.min_k <= k <= self.max_k) or k % self.rank:
@@ -76,16 +81,41 @@ class Scheme:
             cfg.rank != self.rank
             or cfg.common_dim % self.rank
             or bytes(cfg.to_bytes()) != config
+            or tuple(cfg.rows_pattern.to_list()) != self.rows_pattern
+            or tuple(cfg.cols_pattern.to_list()) != self.cols_pattern
         ):
             raise ValueError(f"{self.name} configuration policy/roundtrip failed")
         return cfg
 
     def validate_shape(self, shape, ram: int | None = None) -> int:
-        return 0
+        if self.cert_version != 3:
+            return 0
+        self.ensure_k(shape.k)
+        if shape.slots not in (2,3):
+            raise ValueError(f"{self.name} requires 2-3 retained slots")
+        if shape.m <= 0 or shape.n <= 0 or shape.m > 2**24 or shape.n > 2**24:
+            raise ValueError(f"{self.name} dimensions must be positive and <= 2^24")
+        if shape.m % self.m_multiple or shape.n % self.n_multiple:
+            raise ValueError(
+                f"{self.name} dimensions must be multiples of "
+                f"{self.m_multiple}x{self.n_multiple}"
+            )
+        return shape.memory_estimate(ram, tile_elements=len(self.rows_pattern) * len(self.cols_pattern))
+
+    def bound_multiplier(self, cfg) -> int:
+        try:
+            rows = cfg.rows_pattern.to_list()
+            cols = cfg.cols_pattern.to_list()
+        except AttributeError as exc:
+            raise ValueError(f"{self.name} configuration pattern is unavailable") from exc
+        multiplier = len(rows) * len(cols)
+        if multiplier <= 0:
+            raise ValueError(f"{self.name} configuration pattern is empty")
+        return multiplier
 
     def target_bound(self, target: int, config: bytes) -> int:
         cfg = self.validate_config(config)
-        bound = target * 32 * cfg.common_dim
+        bound = target * self.bound_multiplier(cfg) * cfg.common_dim
         penalized = pm.penalized_target_bound(target, cfg)
         if penalized is None or penalized != bound or bound >= 2**256:
             raise ValueError(f"{self.name} rank-penalized bound differs or overflows")
@@ -118,7 +148,7 @@ class Scheme:
             a_bytes=shape.m*shape.k,bt_bytes=shape.n*shape.k,
             a_seed=words(bytes(job.a_noise_seed)),b_seed=words(bytes(job.b_noise_seed)),
             block_bound=words(block_bound),share_bound=words(share_bound),
-            block_capacity=shape.result_capacity,share_capacity=shape.result_capacity,
+            block_capacity=shape.result_capacity_for_scheme(self),share_capacity=shape.result_capacity_for_scheme(self),
             cert_version=self.kernel_cert_version(),rank=self.rank,job_id=job_id)
 
     def oracle_operand(self, job, bt):
@@ -227,7 +257,17 @@ class Scheme:
         return None
 
 
-V3_SCHEME = Scheme(name="v3", cert_version=3, rank=128, pattern_id=1, kernel_symbol="pmk_run_job")
+V3_SG_SCHEME = Scheme(
+    name="v3", cert_version=3, rank=128, pattern_id=1,
+    kernel_symbol="pmk_run_job", kernel_id="sg", m_multiple=64, n_multiple=64,
+)
+V3_NA_SCHEME = Scheme(
+    name="v3-na", cert_version=3, rank=128, pattern_id=0,
+    kernel_symbol="pmk_run_job_na", kernel_id="na", m_multiple=128, n_multiple=64,
+    rows_pattern=(0, 8, 64, 72),
+    cols_pattern=(0, 1, 2, 3, 16, 17, 18, 19, 32, 33, 34, 35, 48, 49, 50, 51),
+)
+V3_SCHEME = V3_SG_SCHEME
 
 
 @dataclass(frozen=True)

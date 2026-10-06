@@ -129,7 +129,7 @@ def run_harness(tmp_path: Path, name: str, *extra: str, timeout: int | None = No
     return result
 
 
-def test_pool_mock_e2e_accepts_50_real_k3sg_shares(tmp_path: Path) -> None:
+def test_pool_mock_e2e_accepts_50_real_k3sg_shares(tmp_path: Path, v3_g3_admission) -> None:
     if not PYTHON.exists():
         pytest.skip("repo .venv is required for the real pool-mode miner e2e")
     if not (ROOT / "pmkcore/target/release/libpmkcore.dylib").exists():
@@ -149,7 +149,7 @@ def test_pool_mock_e2e_accepts_50_real_k3sg_shares(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(not gpu_pool_e2e_available(), reason="release native libraries are required for GPU pool e2e")
-def test_pool_mock_accepts_shortened_share_with_mainnet_bits(tmp_path: Path) -> None:
+def test_pool_mock_accepts_shortened_share_with_mainnet_bits(tmp_path: Path, v3_g3_admission) -> None:
     result = run_harness(
         tmp_path,
         "b6live_mainnet_bits_acceptance.txt",
@@ -167,7 +167,9 @@ def test_pool_mock_accepts_shortened_share_with_mainnet_bits(tmp_path: Path) -> 
 
 
 @pytest.mark.skipif(not gpu_pool_e2e_available(), reason="release native libraries are required for GPU pool e2e")
-def test_pool_mock_real_difficulty_dispatch_vectors_complete_without_device_errors(tmp_path: Path) -> None:
+def test_pool_mock_real_difficulty_dispatch_vectors_complete_without_device_errors(
+    tmp_path: Path, v3_g3_admission
+) -> None:
     completed = {}
     for difficulty in REAL_DIFFICULTY_VECTORS:
         result = run_harness(

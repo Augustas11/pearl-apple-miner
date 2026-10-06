@@ -17,6 +17,7 @@ from .runtime import gpu_lock, LabSession, RunState, ProbeSchedule, RoutineTelem
 from .native import Native, NativeError
 from .cli import add_desktop_flags
 from .desktop import mining_session
+from .kernel import apply_kernel_environment, resolve_v3_kernel, scheme_for_kernel
 from .v4_admission import configured_v4_admission, V4AdmissionError, V4_G3_ADMISSION_ENV
 from .pipeline import Pipeline, Shape, FatalDeviceError
 from .transport import (GatewayClient, NodeRpcConfig, NodeRpcClient, GatewayLogTail,
@@ -34,8 +35,10 @@ def log(event,**fields):
     print(json.dumps({'time':time.time(),'event':event,**fields},separators=(',',':')),flush=True)
 
 
-def memory_limits(shape):
+def memory_limits(shape,scheme=None):
     ram=int(subprocess.check_output(['sysctl','-n','hw.memsize']))
+    if scheme is not None:
+        return ram//4,scheme.validate_shape(shape,ram)
     return ram//4,shape.validate(ram)
 
 
@@ -48,8 +51,14 @@ async def cancel_pending_tasks(tasks):
         await asyncio.gather(*snapshot,return_exceptions=True)
 
 async def mine(args,config):
+    requested_kernel=getattr(args,'kernel','auto')
+    if requested_kernel == 'auto':
+        requested_kernel=config.get('run',{}).get('kernel',requested_kernel)
+    kernel, device_class = resolve_v3_kernel(requested_kernel)
+    apply_kernel_environment(kernel)
+    scheme = scheme_for_kernel(kernel)
     shape=Shape(**{k:config.get(k,v) for k,v in dataclasses.asdict(Shape()).items()})
-    budget,estimate=memory_limits(shape)
+    budget,estimate=memory_limits(shape,scheme)
     gateway=GatewayClient(args.gateway)
     gateway_cfg=config.get('gateway',{})
     node_cfg=NodeRpcConfig.from_sources(toml_path=args.config,env_path=gateway_cfg.get('env_file'))
@@ -120,11 +129,15 @@ async def mine(args,config):
     native=None
     try:
         # This initializes the production pipeline and runs all fail-closed probes.
-        native=await asyncio.to_thread(Native)
-        pipeline=Pipeline(native,shape,telemetry.log,**({'desktop':desktop} if desktop else {}))
+        native=await asyncio.to_thread(_native_for_kernel,kernel)
+        kernel_metadata = (native.validate_v3_kernel(scheme)
+                           if hasattr(native,'validate_v3_kernel') else None)
+        pipeline=_pipeline_for_scheme(native,shape,telemetry.log,scheme,**({'desktop':desktop} if desktop else {}))
         probes=ProbeSchedule(float(config.get('run',{}).get('probe_interval_seconds',6*3600)))
         log('startup',probe_key=native.probe_key,shape=dataclasses.asdict(shape),
-            memory_budget_bytes=budget,memory_estimate_bytes=estimate)
+            memory_budget_bytes=budget,memory_estimate_bytes=estimate,
+            requested_kernel=requested_kernel,effective_kernel=kernel,
+            device_class=device_class,kernel_metadata=kernel_metadata)
 
         async def track(job,tail,submission_id=None):
             nonlocal accepted,fatal
@@ -297,6 +310,8 @@ def main(*, standalone=False, pool_log=None, admission_refresh=None):
     parser.add_argument('--wallet-allowlist',type=Path)
     parser.add_argument('--worker')
     parser.add_argument('--config',type=Path)
+    parser.add_argument('--kernel',choices=['auto','sg','na'],default='auto')
+    parser.add_argument('--benchmark-reuse-admission',action='store_true',help=argparse.SUPPRESS)
     add_desktop_flags(parser)
     parser.add_argument('--lab-owner-token',default=_env_first('B4_LAB_OWNER_TOKEN','PMK_B4_LAB_OWNER_TOKEN','PMK_LAB_OWNER_TOKEN'))
     parser.add_argument('--resume-hook',type=Path,default=_env_path('B4_LAB_RESUME_HOOK','PMK_B4_LAB_RESUME_HOOK','PMK_LAB_RESUME_HOOK'))
@@ -351,6 +366,22 @@ def main(*, standalone=False, pool_log=None, admission_refresh=None):
         log('fatal',**fields)
         return 1
     return 0
+
+
+def _native_for_kernel(kernel):
+    try:
+        return Native(kernel=kernel)
+    except TypeError:
+        return Native()
+
+
+def _pipeline_for_scheme(native, shape, log_fn, scheme, **kwargs):
+    try:
+        return Pipeline(native, shape, log_fn, scheme=scheme, **kwargs)
+    except TypeError as exc:
+        if "scheme" not in str(exc):
+            raise
+        return Pipeline(native, shape, log_fn, **kwargs)
 
 
 def _native_error_fields(exc, config=None):

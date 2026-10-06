@@ -66,4 +66,26 @@ final class ActivityPowerTests: XCTestCase {
             Int32(PMK_POWER_SOURCE_DESKTOP.rawValue),
         ].contains(pmkPowerSource()))
     }
+
+    func testThermalStateClassificationCoversEveryABIValue() {
+        XCTAssertEqual(currentThermalState(.nominal), .nominal)
+        XCTAssertEqual(currentThermalState(.fair), .fair)
+        XCTAssertEqual(currentThermalState(.serious), .serious)
+        XCTAssertEqual(currentThermalState(.critical), .critical)
+        XCTAssertEqual(ThermalState.nominal.rawValue, Int32(PMK_THERMAL_NOMINAL.rawValue))
+        XCTAssertEqual(ThermalState.fair.rawValue, Int32(PMK_THERMAL_FAIR.rawValue))
+        XCTAssertEqual(ThermalState.serious.rawValue, Int32(PMK_THERMAL_SERIOUS.rawValue))
+        XCTAssertEqual(ThermalState.critical.rawValue, Int32(PMK_THERMAL_CRITICAL.rawValue))
+        XCTAssertEqual(ThermalState.unknown.rawValue, Int32(PMK_THERMAL_UNKNOWN.rawValue))
+    }
+
+    func testLiveThermalStateReturnsDefinedABIValue() {
+        XCTAssertTrue([
+            Int32(PMK_THERMAL_NOMINAL.rawValue),
+            Int32(PMK_THERMAL_FAIR.rawValue),
+            Int32(PMK_THERMAL_SERIOUS.rawValue),
+            Int32(PMK_THERMAL_CRITICAL.rawValue),
+            Int32(PMK_THERMAL_UNKNOWN.rawValue),
+        ].contains(pmkThermalState()))
+    }
 }

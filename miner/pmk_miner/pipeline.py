@@ -151,35 +151,124 @@ class Shape:
             raise ValueError('SG dimensions must be positive multiples of 64 <= 2^24')
         return self.memory_estimate(ram)
 
-    def memory_estimate(self,ram=None):
+    def memory_estimate(self,ram=None,tile_elements=32):
         if self.slots not in (2,3):
             raise ValueError('requires 2–3 retained slots')
         if any(type(x) is not int or x<=0 or x>2**24 for x in (self.m,self.n,self.k)):
             raise ValueError('shape dimensions must be positive integers <= 2^24')
+        if tile_elements <= 0:
+            raise ValueError('tile element count must be positive')
         raw=(self.m+self.n)*self.k
+        result_capacity=self.result_capacity_for_tile_elements(tile_elements)
         if 6*raw > 1024**3:
             raise ValueError('shape exceeds retained pmkcore oracle resource limit')
-        if max(max(self.m,self.n)*self.k, (self.result_capacity+8)*104)>=2_000_000_000:
+        if max(max(self.m,self.n)*self.k, (result_capacity+8)*104)>=2_000_000_000:
             raise ValueError('buffer exceeds 2 GB boundary')
         # Conservative simultaneous GPU recovery + raw buffers + one CPU oracle
         # per slot, including both native result streams, Python find merging/sorting,
         # Merkle trees and allocation slack (even if every tile is a find).
-        self_estimate=self.slots*(12*raw+512*self.m*self.n//32)+64*1024**2
+        self_estimate=self.slots*(12*raw+512*self.m*self.n//tile_elements)+64*1024**2
         if ram is None:
             ram=int(subprocess.check_output(['sysctl','-n','hw.memsize']))
         if self_estimate>ram//4:
             raise ValueError('combined pmk memory estimate exceeds 25% RAM')
         return self_estimate
 
+    def result_capacity_for_tile_elements(self,tile_elements):
+        return max(64, self.m*self.n//tile_elements)
+
+    def result_capacity_for_scheme(self,scheme):
+        return self.result_capacity_for_tile_elements(len(scheme.rows_pattern)*len(scheme.cols_pattern))
+
     @property
     def result_capacity(self):
         # A tile may satisfy either bound, including every tile on easy regtest.
         # Production shapes exceed libpmk's bounded CPU overflow recovery.
-        return max(64, self.m*self.n//32)
+        return self.result_capacity_for_tile_elements(32)
 
     @property
     def ops(self):
         return 2*self.m*self.n*self.k
+
+
+class ShapeBudgetController:
+    """Adaptive square-shape policy for fanless/throttled Macs."""
+
+    dimensions = (8192, 4096, 2048)
+
+    def __init__(self, shape: Shape, *, budget_seconds=0.4, threshold=0.70,
+                 headroom=0.45, window=8, step_up_seconds=300, clock=time.monotonic):
+        self.base = shape
+        allowed = [d for d in self.dimensions if d <= min(shape.m, shape.n)]
+        self.allowed = tuple(allowed or [min(shape.m, shape.n)])
+        self.index = 0
+        self.budget_seconds = float(budget_seconds)
+        self.threshold = float(threshold)
+        self.headroom = float(headroom)
+        self.window = int(window)
+        self.step_up_seconds = float(step_up_seconds)
+        self.clock = clock
+        self.samples: list[float] = []
+        self.last_change = float("-inf")
+        self.changed_reason: str | None = None
+
+    @property
+    def shape(self) -> Shape:
+        dimension = self.allowed[self.index]
+        return Shape(m=dimension, n=dimension, k=self.base.k, slots=self.base.slots)
+
+    @property
+    def throttled(self) -> bool:
+        return self.index > 0
+
+    def p90(self) -> float | None:
+        if len(self.samples) < 2:
+            return self.samples[0] if self.samples else None
+        ordered = sorted(self.samples)
+        return ordered[min(len(ordered) - 1, int(0.9 * (len(ordered) - 1)))]
+
+    def record(self, gpu_seconds: float) -> bool:
+        if gpu_seconds <= 0:
+            return False
+        self.samples.append(float(gpu_seconds))
+        del self.samples[:-self.window]
+        value = self.p90()
+        if value is None:
+            return False
+        if value > self.threshold * self.budget_seconds:
+            return self.step_down("slow_gpu_p90")
+        if (self.index > 0 and len(self.samples) >= self.window
+                and value < self.headroom * self.budget_seconds
+                and self.clock() - self.last_change >= self.step_up_seconds):
+            self.index -= 1
+            self.samples.clear()
+            self.last_change = self.clock()
+            self.changed_reason = "sustained_headroom"
+            return True
+        return False
+
+    def predicted_seconds(self, ops_per_second: float | None) -> float | None:
+        if not ops_per_second:
+            return None
+        return self.shape.ops / ops_per_second
+
+    def predicted_needs_stepdown(self, ops_per_second: float | None) -> bool:
+        predicted = self.predicted_seconds(ops_per_second)
+        return predicted is not None and predicted > self.threshold * self.budget_seconds
+
+    def step_down(self, reason: str) -> bool:
+        if self.index >= len(self.allowed) - 1:
+            return False
+        self.index += 1
+        self.samples.clear()
+        self.last_change = self.clock()
+        self.changed_reason = reason
+        return True
+
+    def consume_change(self) -> str | None:
+        reason = self.changed_reason
+        self.changed_reason = None
+        return reason
 
 
 @dataclass(frozen=True)
