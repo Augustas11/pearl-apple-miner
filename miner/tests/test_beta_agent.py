@@ -1,63 +1,84 @@
 import json
 import os
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-import threading
 import plistlib
+from types import SimpleNamespace
+from pathlib import Path
+import subprocess
+import sys
 import urllib.error
+import urllib.request
 
 from pmk_miner import beta_agent
-from pmk_miner.beta_agent import HeartbeatClient, MinerProcess, sanitize_worker
+from pmk_miner.beta_agent import MinerProcess, sanitize_worker
+from pmk_miner import beta_cleanup
 from pmk_miner import beta_cli
 
 
-def test_heartbeat_contract_headers_and_body():
-    captured = {}
+def _agent(tmp_path, monkeypatch):
+    monkeypatch.setattr(beta_agent, "app_root", lambda: tmp_path)
+    monkeypatch.setattr(beta_agent, "control_path", lambda: tmp_path / "control.json")
+    monkeypatch.setattr(beta_agent, "state_path", lambda: tmp_path / "state.json")
+    monkeypatch.setattr(beta_agent, "platform_info", lambda: {})
+    monkeypatch.setattr(beta_agent, "power_source", lambda: "ac")
+    monkeypatch.setattr(beta_agent, "thermal_state", lambda: "unknown")
+    cfg = {"local_secret": "a" * 64, "wallet": "prl1" + "q" * 40,
+           "worker": "w", "pool_url": "stratum+tcp://127.0.0.1:1", "label": "Test Mac"}
+    return beta_agent.Agent(cfg)
 
-    class Handler(BaseHTTPRequestHandler):
-        def do_POST(self):
-            captured["path"] = self.path
-            captured["authorization"] = self.headers.get("Authorization")
-            captured["install_id"] = self.headers.get("X-Install-Id")
-            captured["body"] = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-            body = b'{"paused":true,"intensity":"low","only_ac":false,"start_at_login":false,"uninstall":false,"poll_s":7}'
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
 
-        def log_message(self, *_args):
-            pass
-
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
+def _request(agent, path, *, method="GET", host=None, headers=None, body=None):
+    port = agent.local_port
+    request_headers = dict(headers or {})
+    request_headers["Host"] = host or f"127.0.0.1:{port}"
+    data = None if body is None else json.dumps(body).encode()
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}{path}", data=data, method=method, headers=request_headers)
     try:
-        client = HeartbeatClient(f"http://127.0.0.1:{server.server_address[1]}", "iid", "tok")
-        desired = client.post({"state": "mining", "tops": 1.25})
+        with urllib.request.urlopen(request, timeout=3) as response:
+            return response.status, dict(response.headers), response.read()
+    except urllib.error.HTTPError as exc:
+        return exc.code, dict(exc.headers), exc.read()
+
+
+def test_local_control_http_security_and_api(tmp_path, monkeypatch):
+    agent = _agent(tmp_path, monkeypatch)
+    agent.start_control_server()
+    try:
+        root = f"/{agent.local_secret}/"
+        status, headers, body = _request(agent, root + "api/status")
+        assert status == 200
+        assert json.loads(body)["status"]["state"] == "checking"
+        assert "Access-Control-Allow-Origin" not in headers
+
+        assert _request(agent, root, host="evil.example")[0] == 403
+        assert _request(agent, "/api/status")[0] == 404
+        import http.client
+        conn = http.client.HTTPConnection("127.0.0.1", agent.local_port, timeout=3)
+        conn.request("GET", "/", headers={"Host": f"localhost:{agent.local_port}"})
+        response = conn.getresponse()
+        assert response.status == 302
+        assert response.getheader("Location") == root
+        conn.close()
+        conn = http.client.HTTPConnection("127.0.0.1", agent.local_port, timeout=3)
+        conn.request("GET", "/", headers={"Host": "evil.example"})
+        assert conn.getresponse().status == 403
+        conn.close()
+        assert _request(agent, root + "api/control", method="POST", body={"paused": True})[0] == 403
+        assert _request(agent, root + "api/control", method="POST",
+                        headers={"X-Pearl-Local": agent.local_secret,
+                                 "Origin": "https://evil.example"}, body={"paused": True})[0] == 403
+
+        status, _, body = _request(agent, root + "api/control", method="POST",
+                                  headers={"X-Pearl-Local": agent.local_secret,
+                                           "Origin": f"http://localhost:{agent.local_port}"},
+                                  body={"paused": True, "intensity": "low"})
+        assert status == 200
+        assert json.loads(body) == {"ok": True, "removing": False}
+        assert agent.controls["paused"] is True
+        assert agent.controls["intensity"] == "low"
+        assert json.loads((tmp_path / "control.json").read_text())["paused"] is True
     finally:
-        server.shutdown()
-        thread.join()
-
-    assert captured == {
-        "path": "/api/hb",
-        "authorization": "Bearer tok",
-        "install_id": "iid",
-        "body": {"state": "mining", "tops": 1.25},
-    }
-    assert desired["paused"] is True
-    assert desired["poll_s"] == 7
-
-
-def test_heartbeat_network_backoff_starts_at_30_and_caps_at_300(monkeypatch):
-    client = HeartbeatClient("http://127.0.0.1:1", "iid", "tok")
-    monkeypatch.setattr(beta_agent.urllib.request, "urlopen",
-                        lambda *_a, **_k: (_ for _ in ()).throw(urllib.error.URLError("offline")))
-    delays = []
-    for _ in range(6):
-        assert client.post({"state": "mining"}) is None
-        delays.append(client.retry_delay)
-    assert delays == [30, 60, 120, 240, 300, 300]
+        agent.stop_control_server()
 
 
 def test_miner_output_parses_telemetry_and_redacts_wallet(tmp_path):
@@ -119,28 +140,49 @@ def test_shape_step_up_requires_sustained_five_minute_headroom(monkeypatch):
 
 
 def test_control_merge_is_persisted_and_sanitized(tmp_path, monkeypatch):
-    monkeypatch.setattr(beta_agent, "app_root", lambda: tmp_path)
-    monkeypatch.setattr(beta_agent, "control_path", lambda: tmp_path / "control.json")
-    cfg = {"api_base": "http://127.0.0.1:1", "install_id": "iid", "miner_token": "tok",
-           "wallet": "prl1abc", "worker": "w", "pool_url": "stratum+tcp://127.0.0.1:1"}
-    agent = beta_agent.Agent(cfg)
-    agent.merge_controls({"paused": True, "intensity": "medium", "only_ac": False,
-                          "start_at_login": False, "uninstall": True, "poll_s": 2})
+    agent = _agent(tmp_path, monkeypatch)
+    agent.update_controls({"paused": True, "intensity": "medium", "only_ac": False,
+                           "start_at_login": False})
     stored = json.loads((tmp_path / "control.json").read_text())
     assert stored == {"paused": True, "intensity": "medium", "only_ac": False,
-                      "start_at_login": False, "uninstall": True, "poll_s": 2}
+                      "start_at_login": False, "uninstall": False}
     assert sanitize_worker(" Family's MacBook Pro!!! ") == "Family-s-MacBook-Pro"
 
 
 def test_cli_updates_control_file(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(beta_agent, "app_root", lambda: tmp_path)
-    monkeypatch.setattr(beta_agent, "control_path", lambda: tmp_path / "control.json")
-    monkeypatch.setattr(beta_cli, "control_path", lambda: tmp_path / "control.json")
-    assert beta_cli.main(["pause"]) == 0
-    assert json.loads((tmp_path / "control.json").read_text())["paused"] is True
-    assert beta_cli.main(["intensity", "low"]) == 0
-    assert json.loads((tmp_path / "control.json").read_text())["intensity"] == "low"
-    assert "intensity set to low" in capsys.readouterr().out
+    agent = _agent(tmp_path, monkeypatch)
+    config = tmp_path / "config.json"
+    config.write_text(json.dumps(agent.cfg))
+    monkeypatch.setattr(beta_cli, "config_path", lambda: config)
+    monkeypatch.setattr(beta_cli, "state_path", lambda: tmp_path / "state.json")
+    agent.start_control_server()
+    try:
+        assert beta_cli.main(["pause"]) == 0
+        assert agent.controls["paused"] is True
+        assert beta_cli.main(["intensity", "low"]) == 0
+        assert agent.controls["intensity"] == "low"
+        assert "intensity set to low" in capsys.readouterr().out
+    finally:
+        agent.stop_control_server()
+
+
+def test_cli_open_uses_secret_local_url_without_printing_it(tmp_path, monkeypatch, capsys):
+    agent = _agent(tmp_path, monkeypatch)
+    config = tmp_path / "config.json"
+    config.write_text(json.dumps(agent.cfg))
+    monkeypatch.setattr(beta_cli, "config_path", lambda: config)
+    monkeypatch.setattr(beta_cli, "state_path", lambda: tmp_path / "state.json")
+    calls = []
+    monkeypatch.setattr(beta_cli.subprocess, "run",
+                        lambda argv, **_kwargs: calls.append(argv) or SimpleNamespace(returncode=0))
+    agent.start_control_server()
+    try:
+        assert beta_cli.main(["open"]) == 0
+        assert calls == [["/usr/bin/open",
+                          f"http://127.0.0.1:{agent.local_port}/{agent.local_secret}/"]]
+        assert agent.local_secret not in capsys.readouterr().out
+    finally:
+        agent.stop_control_server()
 
 
 def test_start_at_login_updates_plist_without_stopping_agent(tmp_path, monkeypatch):
@@ -153,16 +195,40 @@ def test_start_at_login_updates_plist_without_stopping_agent(tmp_path, monkeypat
 
 def test_uninstall_starts_detached_cleanup_without_exposing_credentials(tmp_path, monkeypatch):
     calls = []
-    cfg = {"api_base": "http://127.0.0.1:1", "install_id": "iid", "miner_token": "tok",
-           "wallet": "prl1abc", "worker": "w", "pool_url": "stratum+tcp://127.0.0.1:1"}
-    agent = beta_agent.Agent(cfg)
+    agent = _agent(tmp_path, monkeypatch)
     agent.miner.stop = lambda: calls.append(("stop", None))
     monkeypatch.setattr(beta_agent.tempfile, "mkstemp", lambda **_kw: (os.open(tmp_path / "request.json", os.O_CREAT | os.O_RDWR, 0o600), str(tmp_path / "request.json")))
     monkeypatch.setattr(beta_agent.subprocess, "Popen", lambda argv, **_kw: calls.append(("spawn", argv)) or object())
     agent.uninstall()
     assert calls[0] == ("stop", None)
     assert calls[1][0] == "spawn"
-    assert "tok" not in " ".join(calls[1][1])
+    request = json.loads((tmp_path / "request.json").read_text())
+    assert request == {"home": str(beta_agent.Path.home())}
+
+
+def test_detached_cleanup_removes_local_install_and_boots_out_last(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    app = home / "Library/Application Support/MalibuPearl"
+    logs = home / "Library/Logs/MalibuPearl"
+    plist = home / "Library/LaunchAgents/tech.malibu.pearl.plist"
+    cli = home / ".local/bin/pearl-miner"
+    app.mkdir(parents=True)
+    logs.mkdir(parents=True)
+    plist.parent.mkdir(parents=True)
+    plist.write_text("plist")
+    cli.parent.mkdir(parents=True)
+    cli.symlink_to(app / "current/bin/pearl-miner")
+    request = tmp_path / "cleanup.json"
+    request.write_text(json.dumps({"home": str(home)}))
+    calls = []
+    monkeypatch.setattr(beta_cleanup.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(beta_cleanup.subprocess, "run",
+                        lambda argv, **_kwargs: calls.append(argv) or SimpleNamespace(returncode=0))
+    monkeypatch.setattr(sys, "argv", ["beta_cleanup", "--request", str(request)])
+    assert beta_cleanup.main() == 0
+    assert not app.exists() and not logs.exists() and not plist.exists() and not cli.is_symlink()
+    assert not request.exists()
+    assert calls == [["launchctl", "bootout", f"gui/{os.getuid()}/{beta_cleanup.LABEL}"]]
 
 
 def test_kernel_is_known_before_first_miner_event(monkeypatch):
@@ -207,47 +273,37 @@ def test_payload_reports_zero_speed_unless_mining(tmp_path, monkeypatch):
     agent.last_error = None
     agent.info = {}
     monkeypatch.setattr(beta_agent, "power_source", lambda: "ac")
-    assert agent.payload()["tops"] == 0.0
+    assert agent.payload()["tops"] is None
     assert agent.payload(state="mining")["tops"] == 5.0
 
 
-def test_loop_reports_a_change_quickly(monkeypatch, tmp_path):
-    agent = beta_agent.Agent.__new__(beta_agent.Agent)
-    agent.cfg = {"version": "t", "label": "Mac", "wallet": "prl1test"}
-    agent.controls = {"paused": False, "intensity": "full", "only_ac": True, "start_at_login": True,
-                      "uninstall": False, "poll_s": 30}
-    agent.miner = MinerProcess({"wallet": "prl1test", "worker": "w", "pool_url": "stratum+tcp://127.0.0.1:1"})
-    agent.miner.working = True
-    agent.state = "mining"
-    agent.effective_intensity = "full"
-    agent.started = beta_agent.time.monotonic()
-    agent.last_error = None
-    agent.info = {}
-    monkeypatch.setattr(beta_agent, "power_source", lambda: "ac")
-    monkeypatch.setattr(beta_agent, "control_path", lambda: tmp_path / "controls.json")
-    monkeypatch.setattr(beta_agent, "state_path", lambda: tmp_path / "state.json")
-
-    def apply_controls():
-        agent.state = "paused" if agent.controls["paused"] else "mining"
-    agent.apply_controls = apply_controls
-
-    class Client:
-        retry_delay = 30
-        def post(self, payload):
-            return {"paused": True, "intensity": "full", "only_ac": True, "start_at_login": True,
-                    "uninstall": False, "poll_s": 30}
-    agent.client = Client()
-    waits = []
-
-    class Stop(Exception):
-        pass
-
-    def wait(seconds):
-        waits.append(seconds)
-        raise Stop
-    monkeypatch.setattr(agent.miner.restart_requested, "wait", wait)
+def test_local_status_file_records_port_without_full_wallet_or_secret(tmp_path, monkeypatch):
+    agent = _agent(tmp_path, monkeypatch)
+    agent.start_control_server()
     try:
-        agent.loop()
-    except Stop:
-        pass
-    assert waits == [beta_agent.FAST_REPORT_S]
+        state = json.loads((tmp_path / "state.json").read_text())
+        assert state["local_port"] == agent.local_port
+        assert state["wallet"] != agent.cfg["wallet"]
+        assert agent.local_secret not in (tmp_path / "state.json").read_text()
+        assert state["status"]["tops"] is None
+    finally:
+        agent.stop_control_server()
+
+
+def test_installer_accepts_and_ignores_legacy_credentials(tmp_path):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    uname = fake_bin / "uname"
+    uname.write_text("#!/bin/sh\nprintf '%s\\n' Linux\n")
+    uname.chmod(0o755)
+    installer = Path(__file__).resolve().parents[2] / "scripts/release/install.sh"
+    result = subprocess.run(
+        ["sh", str(installer), "--wallet", "prl1" + "q" * 40,
+         "--token", "legacy-token", "--install-id", "legacy-id"],
+        env=dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}"),
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False,
+    )
+    assert result.returncode == 1
+    assert "Usage:" not in result.stdout
+    assert "token is not valid" not in result.stdout
+    assert "Apple Silicon Macs" in result.stdout

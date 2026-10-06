@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-VERSION="${PMK_RELEASE_VERSION:-0.2.0-beta.17}"
+VERSION="${PMK_RELEASE_VERSION:-0.2.0-beta.18}"
 NAME="pmk-macos-arm64-$VERSION"
 DIST="$ROOT/dist"
 WORK="$DIST/release-work"
@@ -57,7 +57,6 @@ echo "==> Staging relocatable miner and admission assets"
 rsync -a --delete --exclude __pycache__ "$ROOT/miner/pmk_miner/" "$STAGE/miner/pmk_miner/"
 cp "$ROOT/scripts/pmk_mine.py" "$ROOT/scripts/pmk_quickstart.py" "$STAGE/scripts/"
 cp "$ROOT/scripts/release/v4_slim_g3.py" "$STAGE/scripts/release/"
-cp "$ROOT/scripts/release/hb_once.py" "$STAGE/scripts/release/"
 cp "$ROOT/pmkcore/target/release/libpmkcore.dylib" "$STAGE/pmkcore/target/release/"
 cp "$ROOT/pmkcore/v4/target/release/libpmkcore_v4.dylib" "$ROOT/pmkcore/v4/target/release/pmkcore-v4-oracle" "$STAGE/pmkcore/v4/target/release/"
 cp "$ROOT/libpmk/.build/arm64-apple-macosx/release/libpmk.dylib" "$STAGE/libpmk/.build/release/"

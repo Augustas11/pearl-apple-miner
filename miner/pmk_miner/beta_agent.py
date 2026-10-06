@@ -1,15 +1,17 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Website-managed beta agent for non-technical macOS installs."""
+"""Local-control beta agent for non-technical macOS installs."""
 from __future__ import annotations
 
 import argparse
 import collections
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
 import plistlib
 import platform
 import re
+import secrets
 import signal
 import socket
 import subprocess
@@ -17,12 +19,11 @@ import sys
 import tempfile
 import threading
 import time
-import urllib.error
-import urllib.request
+import urllib.parse
 
-VERSION = "0.2.0"
-FAST_REPORT_S = 11  # the server accepts one heartbeat per 10 s
+VERSION = "0.2.0-beta.18"
 LABEL = "tech.malibu.pearl"
+CONTROL_PORTS = range(47811, 47821)
 REGIONS = ("de", "fr", "es", "fi", "ru", "ca", "us", "us2", "us3", "mx", "br", "kz", "hk", "kr", "in", "sg", "tr", "au")
 INTENSITY_PERCENT = {"low": 25, "medium": 50, "full": 100}
 VALID_STATES = {"checking", "mining", "paused", "paused_battery", "paused_thermal", "error", "uninstalled"}
@@ -194,38 +195,6 @@ def set_run_at_load(enabled: bool) -> None:
     os.replace(tmp, plist)
 
 
-class HeartbeatClient:
-    def __init__(self, api_base: str, install_id: str, token: str) -> None:
-        self.url = api_base.rstrip("/") + "/api/hb"
-        self.install_id = install_id
-        self.token = token
-        self.backoff = 30.0
-        self.retry_delay = 30.0
-
-    def post(self, payload: dict[str, object]) -> dict[str, object] | None:
-        body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-        req = urllib.request.Request(self.url, data=body, method="POST",
-            headers={"Content-Type": "application/json",
-                     "Authorization": f"Bearer {self.token}",
-                     "X-Install-Id": self.install_id})
-        try:
-            with urllib.request.urlopen(req, timeout=10) as response:
-                self.backoff = 30.0
-                self.retry_delay = 30.0
-                if response.status != 200:
-                    return None
-                return json.loads(response.read().decode("utf-8") or "{}")
-        except urllib.error.HTTPError as exc:
-            if exc.code == 401:
-                raise PermissionError("heartbeat token rejected") from exc
-            self.retry_delay = self.backoff
-            self.backoff = min(300.0, self.backoff * 2)
-        except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError):
-            self.retry_delay = self.backoff
-            self.backoff = min(300.0, self.backoff * 2)
-        return None
-
-
 def _initial_kernel(cfg: dict[str, object]) -> str:
     """Report the kernel this Mac will run before the miner's first event arrives."""
     try:
@@ -275,7 +244,6 @@ class MinerProcess:
         env = os.environ.copy()
         env["PMK_HOME"] = str(app_root() / "pmk-home")
         env["PYTHONPATH"] = os.pathsep.join(part for part in (str(root / "miner"), str(root), env.get("PYTHONPATH", "")) if part)
-        env["PMK_API_BASE"] = str(self.cfg.get("api_base", "https://pearl.malibu.tech"))
         env.setdefault("PYTHONUNBUFFERED", "1")
         wallet_file = app_root() / "wallet"
         private_write(wallet_file, str(self.cfg["wallet"]) + "\n")
@@ -453,72 +421,255 @@ class MinerProcess:
         return sum(values) / len(values) if values else 0.0
 
 
+class ControlHTTPServer(ThreadingHTTPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+    def __init__(self, address: tuple[str, int], agent: "Agent") -> None:
+        self.agent = agent
+        super().__init__(address, ControlRequestHandler)
+
+
+class ControlRequestHandler(BaseHTTPRequestHandler):
+    """Loopback API with strict host, path-secret, and CSRF checks."""
+
+    server: ControlHTTPServer
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, _format: str, *_args: object) -> None:
+        # Paths contain the local secret, so access logging is intentionally disabled.
+        return
+
+    def _host_allowed(self) -> bool:
+        port = self.server.server_address[1]
+        return self.headers.get("Host") in {f"127.0.0.1:{port}", f"localhost:{port}"}
+
+    def _route(self) -> str | None:
+        try:
+            path = urllib.parse.urlsplit(self.path).path
+        except ValueError:
+            return None
+        prefix = f"/{self.server.agent.local_secret}/"
+        if not path.startswith(prefix):
+            return None
+        return path[len(prefix):]
+
+    def _send(self, status: int, body: bytes, content_type: str) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        if content_type.startswith("text/html"):
+            self.send_header(
+                "Content-Security-Policy",
+                "default-src 'none'; style-src 'unsafe-inline' https://fonts.googleapis.com; "
+                "font-src https://fonts.gstatic.com; script-src 'unsafe-inline'; "
+                "connect-src 'self' https://pearl.herominers.com; base-uri 'none'; "
+                "form-action 'none'; frame-ancestors 'none'",
+            )
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _json(self, status: int, value: object) -> None:
+        body = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        self._send(status, body, "application/json; charset=utf-8")
+
+    def _checked_route(self) -> str | None:
+        if not self._host_allowed():
+            self._json(403, {"error": "forbidden"})
+            return None
+        route = self._route()
+        if route is None:
+            self._json(404, {"error": "not found"})
+        return route
+
+    def do_GET(self) -> None:
+        # Bare http://localhost:<port>/ forwards to the control page, so people only need to
+        # remember one short address. Host is still checked (DNS rebinding); other sites can
+        # navigate here but can't read the redirect or press buttons (POST needs X-Pearl-Local).
+        if self._host_allowed() and urllib.parse.urlsplit(self.path).path in ("/", ""):
+            self.send_response(302)
+            self.send_header("Location", f"/{self.server.agent.local_secret}/")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        route = self._checked_route()
+        if route is None:
+            return
+        if route == "":
+            from .control_page import render_control_page
+
+            html = render_control_page(
+                wallet=str(self.server.agent.cfg["wallet"]),
+                local_secret=self.server.agent.local_secret,
+                port=self.server.server_address[1],
+                computer_name=str(self.server.agent.cfg.get("label") or "This Mac"),
+            ).encode("utf-8")
+            self._send(200, html, "text/html; charset=utf-8")
+            return
+        if route == "api/status":
+            self._json(200, self.server.agent.status_document())
+            return
+        self._json(404, {"error": "not found"})
+
+    def do_POST(self) -> None:
+        route = self._checked_route()
+        if route is None:
+            return
+        if route != "api/control":
+            self._json(404, {"error": "not found"})
+            return
+        secret = self.headers.get("X-Pearl-Local", "")
+        if not secrets.compare_digest(secret, self.server.agent.local_secret):
+            self._json(403, {"error": "forbidden"})
+            return
+        port = self.server.server_address[1]
+        origin = self.headers.get("Origin")
+        allowed_origins = {f"http://127.0.0.1:{port}", f"http://localhost:{port}"}
+        if origin is not None and origin not in allowed_origins:
+            self._json(403, {"error": "forbidden"})
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = -1
+        if length < 1 or length > 4096:
+            self._json(400, {"error": "invalid request"})
+            return
+        try:
+            request = json.loads(self.rfile.read(length))
+            if not isinstance(request, dict):
+                raise ValueError
+            controls = self.server.agent.update_controls(request)
+        except (json.JSONDecodeError, ValueError):
+            self._json(400, {"error": "invalid control"})
+            return
+        self._json(200, {"ok": True, "removing": bool(controls.get("uninstall"))})
+
+
 class Agent:
     def __init__(self, cfg: dict[str, object]) -> None:
         self.cfg = cfg
-        self.client = HeartbeatClient(str(cfg.get("api_base", "https://pearl.malibu.tech")),
-                                      str(cfg["install_id"]), str(cfg["miner_token"]))
+        self.local_secret = str(cfg["local_secret"])
         self.controls = {"paused": False, "intensity": "full", "only_ac": True,
-                         "start_at_login": True, "uninstall": False, "poll_s": 30}
-        self.controls.update(read_json(control_path(), {}))
+                         "start_at_login": True, "uninstall": False}
+        stored_controls = read_json(control_path(), {})
+        if isinstance(stored_controls, dict):
+            self._merge_valid_controls(stored_controls)
+        write_json(control_path(), self.controls)
         self.miner = MinerProcess(cfg)
         self.started = time.monotonic()
         self.info = platform_info()
         self.state = "checking"
         self.last_error: str | None = None
         self.effective_intensity = str(self.controls["intensity"])
+        self.local_port: int | None = None
+        self._lock = threading.RLock()
+        self._wake = threading.Event()
+        self._status: dict[str, object] = {}
+        self._httpd: ControlHTTPServer | None = None
+        self._http_thread: threading.Thread | None = None
 
     def run(self) -> int:
         try:
-            try:
-                self.loop()
-            except PermissionError as exc:
-                self.state = "error"
-                self.last_error = str(exc)
-                write_json(state_path(), {"heartbeat": self.payload(), "controls": self.controls,
-                                          "wallet": redact_wallet(str(self.cfg.get("wallet", "")))})
+            self.start_control_server()
+            self.loop()
             return 0
+        except Exception as exc:
+            self.state = "error"
+            self.last_error = str(exc)[:200] or "the local agent stopped"
+            if self.local_port is not None:
+                self.publish_status()
+            return 1
         finally:
+            self.stop_control_server()
             self.miner.stop()
+
+    def start_control_server(self) -> None:
+        previous = read_json(state_path(), {})
+        preferred = previous.get("local_port") if isinstance(previous, dict) else None
+        candidates = []
+        if isinstance(preferred, int) and preferred in CONTROL_PORTS:
+            candidates.append(preferred)
+        candidates.extend(port for port in CONTROL_PORTS if port not in candidates)
+        last_error: OSError | None = None
+        for port in candidates:
+            try:
+                self._httpd = ControlHTTPServer(("127.0.0.1", port), self)
+                self.local_port = port
+                break
+            except OSError as exc:
+                last_error = exc
+        if self._httpd is None:
+            raise RuntimeError("local control ports 47811 through 47820 are unavailable") from last_error
+        self.publish_status()
+        self._http_thread = threading.Thread(
+            target=self._httpd.serve_forever,
+            kwargs={"poll_interval": 0.2},
+            name="pearl-local-control",
+            daemon=True,
+        )
+        self._http_thread.start()
+
+    def stop_control_server(self) -> None:
+        if self._httpd is None:
+            return
+        self._httpd.shutdown()
+        self._httpd.server_close()
+        if self._http_thread is not None:
+            self._http_thread.join(timeout=2)
+        self._httpd = None
+        self._http_thread = None
 
     def loop(self) -> None:
         while True:
-            local = read_json(control_path(), {})
-            if isinstance(local, dict):
-                self.controls.update({key: local[key] for key in self.controls if key in local})
             self.apply_controls()
-            payload = self.payload()
-            write_json(state_path(), {"heartbeat": payload, "controls": self.controls,
-                                      "wallet": redact_wallet(str(self.cfg.get("wallet", "")))})
-            desired = self.client.post(payload)
-            if desired:
-                self.merge_controls(desired)
-                if self.controls.get("uninstall"):
-                    self.uninstall()
-                    return
-                self.apply_controls()
-            sleep_for = int(self.controls.get("poll_s") or 30)
-            # Report a change (pause, resume, intensity) or a start-up as soon as the server allows,
-            # so the dashboard confirms it in seconds instead of a full poll later.
-            reported = (payload.get("state"), payload.get("intensity"))
-            if (self.state, self.effective_intensity) != reported or self.state == "checking":
-                sleep_for = min(sleep_for, FAST_REPORT_S)
-            if desired is None:
-                sleep_for = int(self.client.retry_delay)
-            self.miner.restart_requested.wait(max(1, sleep_for))
+            self.publish_status()
+            with self._lock:
+                removing = bool(self.controls["uninstall"])
+            if removing:
+                self.state = "uninstalled"
+                self.publish_status()
+                self.uninstall()
+                return
+            self._wake.wait(1.0)
+            self._wake.clear()
 
-    def merge_controls(self, desired: dict[str, object]) -> None:
+    def _merge_valid_controls(self, desired: dict[str, object]) -> None:
         for key in ("paused", "only_ac", "start_at_login", "uninstall"):
-            if isinstance(desired.get(key), bool):
-                self.controls[key] = bool(desired[key])
+            if type(desired.get(key)) is bool:
+                self.controls[key] = desired[key]
         if desired.get("intensity") in INTENSITY_PERCENT:
             self.controls["intensity"] = str(desired["intensity"])
-        if isinstance(desired.get("poll_s"), (int, float)) and float(desired["poll_s"]) >= 1:
-            self.controls["poll_s"] = int(desired["poll_s"])
-        write_json(control_path(), self.controls)
+
+    def update_controls(self, desired: dict[str, object]) -> dict[str, object]:
+        allowed = {"paused", "intensity", "only_ac", "start_at_login", "uninstall"}
+        if not desired or set(desired) - allowed:
+            raise ValueError("unknown control")
+        for key, value in desired.items():
+            if key == "intensity":
+                if value not in INTENSITY_PERCENT:
+                    raise ValueError("invalid intensity")
+            elif type(value) is not bool:
+                raise ValueError("invalid toggle")
+            elif key == "uninstall" and value is not True:
+                raise ValueError("invalid uninstall")
+        with self._lock:
+            self._merge_valid_controls(desired)
+            snapshot = dict(self.controls)
+            write_json(control_path(), snapshot)
+        self._wake.set()
+        return snapshot
 
     def apply_controls(self) -> None:
-        set_run_at_load(bool(self.controls.get("start_at_login", True)))
+        with self._lock:
+            controls = dict(self.controls)
+        set_run_at_load(bool(controls.get("start_at_login", True)))
         thermal = thermal_state()
         if thermal == "critical":
             self.miner.stop()
@@ -527,9 +678,9 @@ class Agent:
         if self.miner.restart_requested.is_set():
             self.miner.stop()
             self.miner.restart_requested.clear()
-        paused = bool(self.controls.get("paused", False))
-        only_ac = bool(self.controls.get("only_ac", True))
-        intensity = str(self.controls.get("intensity", "full"))
+        paused = bool(controls.get("paused", False))
+        only_ac = bool(controls.get("only_ac", True))
+        intensity = str(controls.get("intensity", "full"))
         if thermal == "serious":
             intensity = "low"
         self.effective_intensity = intensity
@@ -542,6 +693,7 @@ class Agent:
                 self.state = "paused_battery"
             elif self.miner.running():
                 self.state = "mining" if self.miner.working else "checking"
+                self.last_error = None
             else:
                 self.state = "error"
                 self.last_error = self.miner.last_error or "miner is not running"
@@ -557,7 +709,7 @@ class Agent:
             "version": str(self.cfg.get("version", VERSION)),
             "label": str(self.cfg.get("label") or computer_name()),
             "state": current_state,
-            "tops": round(self.miner.tops_60s(), 3) if current_state == "mining" else 0.0,
+            "tops": round(self.miner.tops_60s(), 3) if current_state == "mining" else None,
             "shares_accepted": self.miner.accepted,
             "shares_rejected": self.miner.rejected,
             "uptime_s": int(time.monotonic() - self.started),
@@ -566,21 +718,38 @@ class Agent:
             "shape": self.miner.active_shape,
             "throttled": self.miner.throttled,
             "cert_versions": certs,
+            "v4_ready": 4 in certs,
             "intensity": self.effective_intensity,
             "last_error": self.last_error or self.miner.last_error,
             **self.info,
         }
         return result
 
+    def publish_status(self) -> None:
+        payload = self.payload()
+        with self._lock:
+            controls = {key: value for key, value in self.controls.items() if key != "uninstall"}
+            document = {
+                "status": payload,
+                "controls": controls,
+                "wallet": redact_wallet(str(self.cfg.get("wallet", ""))),
+                "local_port": self.local_port,
+            }
+            self._status = document
+        write_json(state_path(), document)
+
+    def status_document(self) -> dict[str, object]:
+        with self._lock:
+            # Round-tripping gives handlers an immutable snapshot without exposing
+            # the config's full wallet or local secret.
+            return json.loads(json.dumps(self._status))
+
     def uninstall(self) -> None:
         self.miner.stop()
         fd, raw = tempfile.mkstemp(prefix="malibu-pearl-uninstall-", suffix=".json")
         request = Path(raw)
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            json.dump({"home": str(Path.home()), "version": str(self.cfg.get("version", VERSION)),
-                       "api_base": self.cfg.get("api_base", "https://pearl.malibu.tech"),
-                       "install_id": self.cfg["install_id"],
-                       "miner_token": self.cfg["miner_token"]}, stream)
+            json.dump({"home": str(Path.home())}, stream)
         os.chmod(request, 0o600)
         subprocess.Popen([sys.executable, "-m", "pmk_miner.beta_cleanup", "--request", str(request)],
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -592,7 +761,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", type=Path, default=config_path())
     args = parser.parse_args(argv)
     cfg = read_json(args.config, {})
-    if not isinstance(cfg, dict) or not cfg.get("miner_token") or not cfg.get("install_id"):
+    secret = cfg.get("local_secret") if isinstance(cfg, dict) else None
+    if (not isinstance(cfg, dict) or not cfg.get("wallet") or not cfg.get("pool_url") or
+            not isinstance(secret, str) or not re.fullmatch(r"[0-9a-f]{64}", secret)):
         print("beta agent missing config", file=sys.stderr)
         return 2
     return Agent(cfg).run()
