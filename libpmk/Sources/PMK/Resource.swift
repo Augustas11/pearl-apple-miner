@@ -41,7 +41,11 @@ func pmkResourceURL(_ relativePath: String,
         guard directoryExists(bundleURL) else {
             throw PMKResourceError.missing("\(source) path does not exist or is not a directory: \(bundleURL.path)")
         }
-        let url = bundleURL.appendingPathComponent(relativePath)
+        // SwiftPM's Swift Build backend (Swift 6.4+) emits a macOS-style bundle with
+        // resources under Contents/Resources; the legacy backend emits a flat bundle.
+        let contentsResources = bundleURL.appendingPathComponent("Contents/Resources")
+        let root = directoryExists(contentsResources) ? contentsResources : bundleURL
+        let url = root.appendingPathComponent(relativePath)
         guard manager.fileExists(atPath: url.path) else {
             throw PMKResourceError.missing("\(source) is missing \(relativePath): \(url.path)")
         }
