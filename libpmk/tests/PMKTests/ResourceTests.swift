@@ -50,6 +50,20 @@ final class ResourceTests: XCTestCase {
         XCTAssertEqual(url.path, bundle.appendingPathComponent("v4_probe/manifest.json").path)
     }
 
+    func testBundleNextToLoadedDylibUsesSwiftBuildResourcesDirectory() throws {
+        let root = try temporaryRoot()
+        let dylibDir = root.appendingPathComponent("relocated")
+        let bundle = try makeBundle(dylibDir, file: "Contents/Resources/metal/v4.metal")
+
+        let url = try pmkResourceURL(
+            "metal/v4.metal",
+            environment: [:],
+            loadedLibraryURL: dylibDir.appendingPathComponent("libpmk.dylib")
+        )
+
+        XCTAssertEqual(url.path, bundle.appendingPathComponent("Contents/Resources/metal/v4.metal").path)
+    }
+
     func testMissingEnvironmentBundleThrowsCleanResourceError() throws {
         let root = try temporaryRoot()
         let missing = root.appendingPathComponent("missing.bundle")
