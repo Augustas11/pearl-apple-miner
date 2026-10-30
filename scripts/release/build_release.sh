@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-VERSION="${PMK_RELEASE_VERSION:-0.2.0-beta.19}"
+VERSION="${PMK_RELEASE_VERSION:-0.2.0-beta.20}"
 NAME="pmk-macos-arm64-$VERSION"
 DIST="$ROOT/dist"
 WORK="$DIST/release-work"

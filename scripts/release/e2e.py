@@ -167,7 +167,8 @@ async def main() -> int:
     subprocess.run(["launchctl", "bootout", label], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     port: int | None = None
     try:
-        wallet = "prl1" + "q" * 40
+        # Checksum-valid bech32m test address (all-zero program); the installer rejects typos.
+        wallet = "prl1pqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqen4g90"
         command = ["sh", str(args.installer), "--wallet", wallet]
         env = dict(os.environ, HOME=str(home), PMK_RELEASE_URL=args.tarball.resolve().as_uri(),
                    PMK_POOL_URL=pool.url(), PMK_TEST_FORCE_GPU_SECONDS="0.29",
@@ -181,14 +182,11 @@ async def main() -> int:
             raise RuntimeError("install failed")
         for expected in (
             "Done. Your Mac is mining Pearl.",
-            "Your control page just opened in your browser. Bookmark it.",
-            "To open it again later, run: pearl-miner open",
+            "Your control page just opened in your browser.",
+            "To open it again any time, go to http://localhost:",
         ):
             if expected not in installed.stdout:
                 raise AssertionError(f"installer omitted: {expected}")
-        fallback_line = f"Pearl miner command: {fallback_cli}"
-        if installed.stdout.count(fallback_line) != 1:
-            raise AssertionError("fallback CLI path was not printed exactly once")
 
         cfg = json.loads(config.read_text(encoding="utf-8"))
         initial = json.loads(state.read_text(encoding="utf-8"))
